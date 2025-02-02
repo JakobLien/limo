@@ -40,12 +40,25 @@ def getAngle(i):
 def getAverage(*points):
     return [sum([p[0] for p in points])/len(points), sum([p[1] for p in points])/len(points)]
 
+def pointDistance(p1, p2):
+    return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
+
+def pointBetween(p1, p2, p3):
+    # if min(pointDistance(p1, p2), pointDistance(p2, p3)) < 0.01:
+    #     # Om nån av punktan e under en cm fra hverandre telle vi det
+    #     print('Override')
+    #     return True
+    
+    # Versjon av følgende omstokket for å unngå deling på 0: (p3[0] - p1[0]) / (p2[0] - p1[0]) - (p3[1] - p1[1]) / (p2[1] - p1[1]) < 0.1
+    return (p3[0] - p1[0]) * (p2[1] - p1[1]) - (p3[1] - p1[1]) * (p2[0] - p1[0]) < 10**6 * (p2[1] - p1[1]) * (p2[0] - p1[0])
+
 # Fleir program her:
 # Det utkommenterte e at den kjøre mot den lengst unna lidar målinga den finn
 # Så e koden som ligg her no at man kan styr hjulan sin hastighet (opp/ned) og svinging(høyre/venstre) ved å rør på skjermen
 # også vises også koordinaten av fingern øverst te venstre, og vi tegne en stor blå sirkel under fingern. 
 
 relCord = (0, 0)
+isLine = False
 while True:
     # Kryss ut eller CTRL + C for å stopp programmet
     if any([e.type == pygame.QUIT for e in pygame.event.get()]) or rospy.is_shutdown():
@@ -54,7 +67,7 @@ while True:
     # Draw background to clear last frame
     screen.fill("white")
 
-    pygame.draw.circle(screen, "green", [300, 300], 10)
+    pygame.draw.polygon(screen, "black", [(300, 280), (310, 310), (290, 310)], 5)
 
     points = []
     for i, r in enumerate(ranges):
@@ -62,7 +75,7 @@ while True:
             continue
         points.append(((r + 0.1) * getAngle(i)[0], (r + 0.1) * getAngle(i)[1]))
 
-    for point in points:
+    for i, point in enumerate(points):
         # if 2 < i < 428 and abs(getAverage(*points[(i-2)%430:(i+2)%430])[0] - points[i][0]) + abs(getAverage(*points[(i-2)%430:(i+2)%430])[1] - points[i][1]) > 0.1:
         #     continue
         # intensity = int((255 - (intensities[i] / 1024 * 256)) / 2)
@@ -71,7 +84,15 @@ while True:
         # Lysintensiteten e et godt mål på om det e en god måling, virke som om alle ekte målinga har lysintensitet over 1000 (av 1024 anntar e)
         # Fortsatt en par feilmålinger med dette, men det kan vi fjern effektivt via fleir målinger på rad. 
 
-        pygame.draw.circle(screen, "black", (300 + int(100 * point[0]), 300 - int(100 * point[1])), 3)
+        if 0 < i < len(points)-1:
+            if pointBetween(points[i-1], points[i], points[i+1]):
+                print('Ye')
+                pygame.draw.circle(screen, "gray", (300 + int(100 * point[0]), 300 - int(100 * point[1])), 3)
+            else:
+                print('No')
+                pygame.draw.circle(screen, "black", (300 + int(100 * point[0]), 300 - int(100 * point[1])), 3)
+
+    # for i, point in enumerate(points):
 
     pygame.draw.circle(screen, "pink", relCord, 3)
 
