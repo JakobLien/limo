@@ -6,6 +6,7 @@ os.environ["DISPLAY"] = ":0" # Gjør at pygame åpne vindu på roboten heller en
 
 import rospy
 from sensor_msgs.msg import LaserScan
+from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 
 # pygame setup
@@ -22,20 +23,26 @@ def scan_callback(msg):
     ranges = [r if msg.range_min < r < msg.range_max else None for r in msg.ranges]
 
 # Initialize the ROS node
-rospy.init_node('scan_listener')
+rospy.init_node('listener')
 
-# Subscribe to the /scan topic
+# Subscribe to the /scan topic på 10 hz
 rospy.Subscriber('/scan', LaserScan, scan_callback)
 
-# Create a publisher for the /cmd_vel topic
-cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+robotPos = [0, 0, 0] # x og y med x fram, og radian vinkel
 
-cmd_vel = Twist()
+def odom_callback(msg):
+    global robotPos
+    robotPos[2] += msg.twist.twist.angular.z / 50 * 0.6 # Manuell korrigering
+    robotPos[1] += msg.twist.twist.linear.x / 50 * math.sin(robotPos[2]) * 1
+    robotPos[0] += msg.twist.twist.linear.x / 50 * math.cos(robotPos[2]) * 1
+    # print(robotPos)
 
-def getAngle(i):
+# Subscribe to the /odom topic på 50 hz
+rospy.Subscriber('/odom', Odometry, odom_callback)
+
+def getAngle(i, theta=0):
     'Returns a (x, y) touple on the unit circle from an index in the Lidar list'
-    vinkel = 2 * math.pi * i / 430
-    return (math.sin(vinkel), -math.cos(vinkel))
+    return rotateVector(1, 0, -2 * math.pi * (i + 215) / 430) # Den første målingen e rett bakover
 
 def getAverage(*points):
     return [sum([p[0] for p in points])/len(points), sum([p[1] for p in points])/len(points)]
@@ -48,17 +55,41 @@ def pointBetween(p1, p2, p3):
     #     # Om nån av punktan e under en cm fra hverandre telle vi det
     #     print('Override')
     #     return True
-    
+
     # Versjon av følgende omstokket for å unngå deling på 0: (p3[0] - p1[0]) / (p2[0] - p1[0]) - (p3[1] - p1[1]) / (p2[1] - p1[1]) < 0.1
     return (p3[0] - p1[0]) * (p2[1] - p1[1]) - (p3[1] - p1[1]) * (p2[0] - p1[0]) < 10**6 * (p2[1] - p1[1]) * (p2[0] - p1[0])
+
+def rotateVector(x, y, theta):
+    x_new = x * math.cos(theta) + y * math.sin(theta)
+    y_new = -x * math.sin(theta) + y * math.cos(theta)
+    return x_new, y_new
+
+def addVector(x1, y1, x2, y2):
+    'GITT SAMME REFERANSERAMME!!!'
+    return x1+x2, y1+y2
+
+def toScreen(x, y):
+    'Konvertere fra robotens referanseramme der x e framover, til skjermen der negativ y e framover, der vi også sentrere på bilen'
+    return 300 - y * 100, 300 - x * 100
+
+def scaleVector(x, y, factor):
+    return x * factor, y * factor
 
 # Fleir program her:
 # Det utkommenterte e at den kjøre mot den lengst unna lidar målinga den finn
 # Så e koden som ligg her no at man kan styr hjulan sin hastighet (opp/ned) og svinging(høyre/venstre) ved å rør på skjermen
 # også vises også koordinaten av fingern øverst te venstre, og vi tegne en stor blå sirkel under fingern. 
 
-relCord = (0, 0)
+# X e framover og positiv rotasjon e te venstre. 
+
+# Create a publisher for the /cmd_vel topic
+cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+
+cmd_vel = Twist()
+
 isLine = False
+frameCount = 0
+firstPoints = []
 while True:
     # Kryss ut eller CTRL + C for å stopp programmet
     if any([e.type == pygame.QUIT for e in pygame.event.get()]) or rospy.is_shutdown():
@@ -69,41 +100,34 @@ while True:
 
     pygame.draw.polygon(screen, "black", [(300, 280), (310, 310), (290, 310)], 5)
 
+    # pygame.draw.circle(screen, "green", toScreen(*scaleVector(*robotPos[:2], -1)), 10)
+
+    pygame.draw.circle(screen, "green", toScreen(*addVector(*rotateVector(0, 0, robotPos[2]), *scaleVector(*robotPos[:2], -1))), 3)
+
     points = []
     for i, r in enumerate(ranges):
         if r == None:
             continue
-        points.append(((r + 0.1) * getAngle(i)[0], (r + 0.1) * getAngle(i)[1]))
+        points.append(scaleVector(getAngle(i)[0], getAngle(i)[1], r))
 
     for i, point in enumerate(points):
-        # if 2 < i < 428 and abs(getAverage(*points[(i-2)%430:(i+2)%430])[0] - points[i][0]) + abs(getAverage(*points[(i-2)%430:(i+2)%430])[1] - points[i][1]) > 0.1:
-        #     continue
-        # intensity = int((255 - (intensities[i] / 1024 * 256)) / 2)
-        # color = (intensity, intensity, intensity)
+        pygame.draw.circle(screen, "black", toScreen(*point), 3)
 
-        # Lysintensiteten e et godt mål på om det e en god måling, virke som om alle ekte målinga har lysintensitet over 1000 (av 1024 anntar e)
-        # Fortsatt en par feilmålinger med dette, men det kan vi fjern effektivt via fleir målinger på rad. 
-
-        if 0 < i < len(points)-1:
-            if pointBetween(points[i-1], points[i], points[i+1]):
-                print('Ye')
-                pygame.draw.circle(screen, "gray", (300 + int(100 * point[0]), 300 - int(100 * point[1])), 3)
-            else:
-                print('No')
-                pygame.draw.circle(screen, "black", (300 + int(100 * point[0]), 300 - int(100 * point[1])), 3)
-
-    # for i, point in enumerate(points):
-
-    pygame.draw.circle(screen, "pink", relCord, 3)
+    firstPoints = [addVector(*rotateVector(*p, -robotPos[2]), *scaleVector(*robotPos[:2], 1)) for p in points]
+    for i, point in enumerate(firstPoints):
+        pygame.draw.circle(screen, "gray", toScreen(*addVector(*rotateVector(*point, robotPos[2]), *scaleVector(*robotPos[:2], 1))), 3)
 
     f = pygame.font.Font(size=32)
-    
-    screen.blit(f.render(f'({round(relCord[0], 2)}, {round(relCord[1], 2)})', True, "black", "white"), (30, 10))
 
+    screen.blit(f.render(f'({round(robotPos[0], 2)}, {round(robotPos[1], 2)}, {round(robotPos[2], 2)})', True, "black", "white"), (30, 10))
+    # print(f'({round(robotPos[0], 2)}, {round(robotPos[1], 2)}, {round(robotPos[2], 2)})')
+
+    touchCord = (0, 0) # Merk at dette e bare koordinatan på skjermen. 
     if pygame.mouse.get_pressed()[0]:
-        pygame.draw.circle(screen, "blue", pygame.mouse.get_pos(), 30)
-        relCord = ((pygame.mouse.get_pos()[0] - 300) / 300, (pygame.mouse.get_pos()[1] - 300) / 300)
+        pygame.draw.circle(screen, "blue", (40, pygame.mouse.get_pos()[1]), 30)
+        touchCord = ((pygame.mouse.get_pos()[0] - 300) / 300, (pygame.mouse.get_pos()[1] - 300) / 300)
         # print(relCord)
+        # sliderPos = -(pygame.mouse.get_pos()[1] - 300) / 300
 
     # if points:
     #     furthest_point = max([p for p in points if p[1] > abs(p[0])], key=lambda p: p[0]**2 + p[1]**2)
@@ -115,15 +139,29 @@ while True:
     # else:
     #     print('points empty')
 
-    cmd_vel.linear.x = -relCord[1]
-    cmd_vel.angular.z = -relCord[0] * -relCord[1] # Dette konvertere fra turning velocity (grader) te faktisk wheel position, så e smoothar for dette:)
+    # cmd_vel.linear.x = -touchCord[1]
+    # cmd_vel.angular.z = -touchCord[0] * -touchCord[1] # Dette konvertere fra turning velocity (grader) te faktisk wheel position, så e smoothar for dette:)
+    # cmd_vel.linear.x = 0.1
+
+    # Fram og tilbake
+    if frameCount % 50 < 25:
+        cmd_vel.linear.x = 0.1
+    else:
+        cmd_vel.linear.x = -0.1
+
+    cmd_vel.angular.z = 100
     cmd_vel_pub.publish(cmd_vel)
+
+    if frameCount % 5 == 0:
+        # robotPos = [0, 0, 0]
+        # Transformer til global posisjon. 
+        firstPoints = [addVector(*rotateVector(*p, -robotPos[2]), *scaleVector(*robotPos[:2], 1)) for p in points]
 
     pygame.display.flip() # Draw the screen
 
     clock.tick(10)  # 10 FPS
 
-    relCord = (relCord[0] / 1.1, relCord[1] / 1.1)
+    frameCount += 1
 
 # Stopp ROS om vi kryssa ut
 rospy.signal_shutdown(0)

@@ -8,6 +8,8 @@ import rospy
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
 
+# MERK at denne fila e gammel og bruke referanserammen der Y e framover. 
+
 # pygame setup
 pygame.init()
 screen = pygame.display.set_mode((600, 600))
