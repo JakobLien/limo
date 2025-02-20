@@ -1,4 +1,5 @@
 import math
+import random
 
 
 class Point:
@@ -10,6 +11,9 @@ class Point:
         else:
             self.x = x
             self.y = y
+
+    def __str__(self):
+        return f'Point({self.x}, {self.y})'
 
     def xy(self):
         return self.x, self.y
@@ -25,17 +29,38 @@ class Point:
     def scale(self, scale):
         return Point(self.x * scale, self.y * scale)
     
+    def __neg__(self):
+        return Point(-self.x, -self.y)
+    
     def distance(self, point):
         return math.sqrt((self.x-point.x)**2 + (self.y-point.y)**2)
 
     def toReferenceFrame(self, frame):
-        return self.add(Point(frame[:2]).scale(-1)).rotate(frame[2])
+        return self.add(-Point(frame[:2])).rotate(frame[2])
 
     def fromReferenceFrame(self, frame):
         return self.rotate(-frame[2]).add(Point(frame[:2]))
 
     def toScreen(self):
-        return Point(300 - self.y * 100, 300 - self.x * 100)
+        return Point(toScreen(*self.xy()))
+    
+    def fromScreen(self):
+        return Point(fromScreen(*self.xy()))
+
+
+class Line:
+    def __init__(self, p1, p2):
+        self.p1 = p1
+        self.p2 = p2
+    
+    def __str__(self):
+        return f'Line({self.p1}, {self.p2})'
+    
+    def closestPointOnLine(self, p, bounded=True):
+        return closestPointOnLine(self.p1, self.p2, self.p3, bounded=bounded)
+    
+    def lineDistance(self, p1, p2, p3, bounded=True):
+        return lineDistance(p1, p2, p3, bounded=bounded)
 
 
 def getUnitPointFromAngle(i, theta=0):
@@ -43,11 +68,28 @@ def getUnitPointFromAngle(i, theta=0):
     return Point(1, 0).rotate(-2 * math.pi * (i + 215) / 430) # Den første målingen e rett bakover
 
 
-def lineDistance(p1, p2, p3):
-    'Avstanden fra p3 til linja som går mellom p1 og p2'
-    if min(p1.distance(p3), p2.distance(p3)) > p1.distance(p2):
-        # Om den e forbi linja, heller return avstanden til endepunktan. 
-        return min(p1.distance(p3), p2.distance(p3))
+def closestPointOnLine(p1, p2, p3, bounded=True):
+    'Det nærmeste punktet til p3 på linja mellom p1 og p2'
+    t = ((p3.x - p1.x) * (p2.x - p1.x) + (p3.y - p1.y) * (p2.y - p1.y)) / ((p2.x - p1.x)**2 + (p2.y - p1.y)**2)
+
+    if bounded:
+        t = min(max(0, t), 1)
+
+    return Point(p1.x + t * (p2.x - p1.x), p1.y + t * (p2.y - p1.y))
+
+
+def lineDistance(p1, p2, p3, bounded=True):
+    'Avstanden fra p3 til linja mellom p1 og p2'
+    if bounded:
+        # Vi kjøre pytagoras for å sjekk om det e nærmast linja eller endepunktan. 
+        # For p1 som hjørne
+        if p1.distance(p2)**2 + p1.distance(p3)**2 < p2.distance(p3)**2:
+            return p1.distance(p3)
+
+        # For p2 som hjørne
+        if p2.distance(p1)**2 + p2.distance(p3)**2 < p1.distance(p3)**2:
+            return p2.distance(p3)
+
     if p1.distance(p2) == 0:
         # Om linjepunktan e samme sted, return avstanden direkte. 
         return p1.distance(p3)
@@ -61,7 +103,12 @@ def toScreen(x, y):
     return 300 - y * 100, 300 - x * 100
 
 
-def splitAndMerge(points, distanceParameter=0.2):
+def fromScreen(x, y):
+    # TODO: Skriv om til å bruk toReferenceFrame
+    return (-y + 300) / 100, (-x + 300) / 100
+
+
+def splitAndMerge(points, distanceParameter=0.1, minPoints=3):
     '''
     Kjøre split and merge med grunnleggende distanceParameter. Funke, men ikkje forferdelig effektivt.
     Vi burda ha prøvd oss på en meir tilpassningdyktig distanseberegning, typ om mange punkt på rad e langt unna linja,
@@ -104,4 +151,56 @@ def splitAndMerge(points, distanceParameter=0.2):
         else:
             i += 1
 
-    return indexes
+    return [p for i, p in enumerate(points) if i in indexes]
+
+
+def closestPoint(point, points):
+    bestDist = 100 # 100 meter altså
+    bestPoint = None
+    for p in points:
+        if point.distance(p) < bestDist:
+            bestDist = point.distance(p)
+            bestPoint = p
+    return bestPoint
+
+
+def tryTranslations(oldPoints, newPoints):
+    'Prøv deg fram til transformasjoner som gjør at points stemme bedre'
+
+    totalTransform = (0.0, 0.0, 0.0)
+    pointMatches = []
+    for p in newPoints:
+        closest = closestPoint(p, oldPoints)
+        if p.distance(closest) < 0.1:
+            pointMatches.append((p, closest))
+
+    if len(pointMatches) < 3:
+        # Om veldig få points matche, ikkje transformer shit!
+        return totalTransform
+
+    distances = [p1.toReferenceFrame(totalTransform).distance(p2) ** 2 for p1, p2 in pointMatches]
+    # averageDist = math.sqrt(sum(distances)/len(distances))
+    # Dette ^ e det vi egentlig sammenligne med, altså snittet av kvadratet av distansan. 
+    # Men til seinar i loopen e antall distansa punktpar det samme, og kvadratrot er ikke nødvendig for sammenligningen. 
+    # Derfor gjør vi istedet følgende, så vi kan hopp ut av indre loopen under, så fort som mulig:)
+    dist = sum(distances)
+
+    initialDist = dist
+
+    for j in range(1, 50, 5):
+        # Velg en tilfeldig transformasjon, men med stadig mindre bound på tilfeldigheten. Går gradvis 25 cm pr loop til 0.5 cm pr loop. 
+        newTransform = ((random.random() - 0.5) / j, (random.random() - 0.5) / j, (random.random() - 0.5) / j)
+        newTotalTransform = [t1+t2 for t1, t2 in zip(totalTransform, newTransform)]
+
+        newDist = 0
+        for p1, p2 in pointMatches:
+            newDist += p1.toReferenceFrame(newTotalTransform).distance(p2) ** 2
+            if newDist > dist:
+                break # Da kan vi ikkje få te nå bedre denne iterasjonen
+
+        if newDist < dist:
+            dist = newDist
+            totalTransform = newTotalTransform
+    
+    print(totalTransform, 'improved distance by', round(math.sqrt(initialDist)/len(pointMatches) - math.sqrt(dist)/len(pointMatches), 5))
+    return totalTransform
