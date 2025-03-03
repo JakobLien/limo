@@ -3,7 +3,7 @@ import math
 import os
 os.environ["DISPLAY"] = ":0" # Gjør at pygame åpne vindu på roboten heller enn over SSH
 
-from geometry import Point, getUnitPointFromAngle, splitAndMerge, tryTranslations
+from geometry import Point, closestPoint, closestPointIndex, getUnitPointFromAngle, splitAndMerge, tryTranslations
 import rospy
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
@@ -49,9 +49,13 @@ isLine = False
 frameCount = 0
 touchCord = Point(0, 0)
 
-firstPoints = []
+# firstPoints = []
 pointIndexes = []
 target = None
+
+# Liste av points som e hjørne punkt
+# Sida det bli veldig få punkt kan vi slepp å tenk på oppslagstid foreløpig
+globalMap = []
 
 while True:
     # Kryss ut eller CTRL + C for å stopp programmet
@@ -80,7 +84,7 @@ while True:
     ], 5)
 
     for point in points:
-        pygame.draw.circle(screen, "black", point.toReferenceFrame(robotPos).toScreen().xy(), 3)
+        pygame.draw.circle(screen, "black", point.toReferenceFrame(robotPos).toScreen().xy(), 1)
 
     # Skriv robotPos til skjermen
     f = pygame.font.Font(size=32)
@@ -91,8 +95,10 @@ while True:
     if pygame.mouse.get_pressed()[0]:
         pygame.draw.circle(screen, "blue", Point(pygame.mouse.get_pos()).fromScreen().toScreen().xy(), 30)
         touchCord = Point(pygame.mouse.get_pos()).fromScreen()
-        target = touchCord
+        target = touchCord.fromReferenceFrame(robotPos)
 
+    if target:
+        print(target.angle())
 
     # KJØRING
     if target and not pygame.mouse.get_pressed()[0]:
@@ -111,22 +117,71 @@ while True:
     cmd_vel_pub.publish(cmd_vel)
 
 
-    # POSISJON KORRIGERING
-    if frameCount % 10 == 5 and cmd_vel.linear.x != 0:
-        # Korriger posisjon dersom vi e i bevegelse. 
-        if firstPoints:
-            newPoints = splitAndMerge(points)
-            movedPoints = [p for p in newPoints]
+    # POSISJON KORRIGERING OG MAP MAINTENANCE
+    newPoints = splitAndMerge(points)
 
-            for point in firstPoints:
-                pygame.draw.circle(screen, "gray", point.toReferenceFrame(robotPos).toScreen().xy(), 3)
+    for point in globalMap:
+        if point.data.get('miss') > 5:
+            pygame.draw.circle(screen, "red", point.toReferenceFrame(robotPos).toScreen().xy(), 3)
+        else:
+            pygame.draw.circle(screen, "gray", point.toReferenceFrame(robotPos).toScreen().xy(), 3)
 
-            offset = tryTranslations(firstPoints, movedPoints)
-            # print(offset)
-            robotPos = [t1-t2 for t1, t2 in zip(robotPos, offset)]
+    # Korriger posisjon dersom vi e i bevegelse. 
+    offset = [0, 0, 0]
+    if cmd_vel.linear.x != 0:
+        offset = tryTranslations(globalMap, newPoints)
+        robotPos = [t1-t2 for t1, t2 in zip(robotPos, offset)]
 
-    if frameCount % 50 == 10:
-        firstPoints = splitAndMerge(points)
+    # Vedlikehold kartet
+    hitIndexes = []
+    for newPoint in [p.toReferenceFrame(offset) for p in newPoints]:
+        closest = closestPoint(newPoint, globalMap)
+        if not closest or newPoint.distance(closest) > 0.05:
+            # Nytt punkt
+            globalMap.append(newPoint.setData('miss', -1))
+        else:
+            # Eksisterende pukt
+            closestIndex = globalMap.index(closest)
+            globalMap[closestIndex] = closest.toward(newPoint).setData('miss', closest.data['miss'])
+            if closestIndex not in hitIndexes:
+                hitIndexes.append(closestIndex)
+
+    for i, p in enumerate(globalMap):
+        if i in hitIndexes:
+            # En mindre miss
+            globalMap[i] = p.setData('miss', max(p.data['miss'] - 1, 0))
+        else:
+            # En potensiell miss, spørs på obscurement
+            pInRobotFrame = p.toReferenceFrame(robotPos)
+            pInRobotFrameAngle = pInRobotFrame.angle()
+
+            bestPointIndexMax = len(points) - 1
+            bestPointIndexMin = 0
+            while bestPointIndexMax - bestPointIndexMin > 1:
+                bestPointIndex = int((bestPointIndexMax + bestPointIndexMin) / 2)
+                # Merk at Lidaren gir oss punktan fra stor til lav vinkel (venstre mot høyre)
+                if points[bestPointIndex].toReferenceFrame(robotPos).angle() > pInRobotFrameAngle:
+                    bestPointIndexMax = bestPointIndex
+                else:
+                    bestPointIndexMin = bestPointIndex
+            measurementPoint = points[int((bestPointIndexMax + bestPointIndexMin) / 2)].toReferenceFrame(robotPos)
+
+            if abs(measurementPoint.angle() - pInRobotFrame.angle()) > 2 * math.pi / 430:
+                # Om den nærmeste målingens vinkel ikkje stemme godt overrens, ikkje mink usikkerheten
+                continue
+
+            if measurementPoint.distance(Point(0, 0)) > pInRobotFrame.distance(Point(0, 0)):
+                # Det e bak roboten, minke sikkerheten
+                globalMap[i] = p.setData('miss', p.data['miss'] + 1)
+            else:
+                # Det e foran roboten, minke ikke sikkerheten
+                pass
+
+    # Slett punkt med mange misses
+    globalMap = [p for p in globalMap if p.data['miss'] < 10]
+
+    # if frameCount % 50 == 10:
+    #     firstPoints = splitAndMerge(points)
 
     pygame.display.flip() # Draw the screen
 

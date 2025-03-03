@@ -3,7 +3,7 @@ import random
 
 
 class Point:
-    def __init__(self, x, y=None):
+    def __init__(self, x, y=None, data=None):
         if y == None:
             point = x
             self.x = point[0]
@@ -11,6 +11,7 @@ class Point:
         else:
             self.x = x
             self.y = y
+        self.data = {}
 
     def __str__(self):
         return f'Point({self.x}, {self.y})'
@@ -18,23 +19,37 @@ class Point:
     def xy(self):
         return self.x, self.y
 
+    def setData(self, key, value):
+        p = Point(self.x, self.y)
+        p.data = self.data.copy()
+        p.data[key] = value
+        return p
+
     def rotate(self, angle):
         x_new = self.x * math.cos(angle) + self.y * math.sin(angle)
         y_new = -self.x * math.sin(angle) + self.y * math.cos(angle)
         return Point(x_new, y_new)
-    
+
+    def angle(self):
+        return math.atan2(self.y, self.x)
+
     def add(self, point):
         return Point(self.x + point.x, self.y + point.y)
 
     def scale(self, scale):
         return Point(self.x * scale, self.y * scale)
-    
+
+    def toward(self, point, percent=0.5):
+        'Returne et nytt punkt mellom dette og et anna punkt, med prosentandel for å si kor'
+        return self.add(point.add(-self).scale(percent))
+
     def __neg__(self):
         return Point(-self.x, -self.y)
-    
+
     def distance(self, point):
         return math.sqrt((self.x-point.x)**2 + (self.y-point.y)**2)
 
+    # REFERANSERAMME
     def toReferenceFrame(self, frame):
         return self.add(-Point(frame[:2])).rotate(frame[2])
 
@@ -43,7 +58,7 @@ class Point:
 
     def toScreen(self):
         return Point(toScreen(*self.xy()))
-    
+
     def fromScreen(self):
         return Point(fromScreen(*self.xy()))
 
@@ -154,15 +169,20 @@ def splitAndMerge(points, distanceParameter=0.1, minPoints=3):
     return [p for i, p in enumerate(points) if i in indexes]
 
 
-def closestPoint(point, points):
+def closestPointIndex(point, points):
     bestDist = 100 # 100 meter altså
-    bestPoint = None
-    for p in points:
+    bestPointIndex = None
+    for i, p in enumerate(points):
         if point.distance(p) < bestDist:
             bestDist = point.distance(p)
-            bestPoint = p
-    return bestPoint
+            bestPointIndex = i
+    return bestPointIndex
 
+
+def closestPoint(point, points):
+    i = closestPointIndex(point, points)
+    if i:
+        return points[i]
 
 def tryTranslations(oldPoints, newPoints):
     'Prøv deg fram til transformasjoner som gjør at points stemme bedre'
@@ -171,7 +191,9 @@ def tryTranslations(oldPoints, newPoints):
     pointMatches = []
     for p in newPoints:
         closest = closestPoint(p, oldPoints)
-        if p.distance(closest) < 0.1:
+        if not closest:
+            continue
+        elif p.distance(closest) < 0.1:
             pointMatches.append((p, closest))
 
     if len(pointMatches) < 3:
@@ -187,9 +209,9 @@ def tryTranslations(oldPoints, newPoints):
 
     initialDist = dist
 
-    for j in range(1, 50, 5):
+    for j in range(1, 20, 1):
         # Velg en tilfeldig transformasjon, men med stadig mindre bound på tilfeldigheten. Går gradvis 25 cm pr loop til 0.5 cm pr loop. 
-        newTransform = ((random.random() - 0.5) / j, (random.random() - 0.5) / j, (random.random() - 0.5) / j)
+        newTransform = ((random.random() - 0.5) / 10 / j, (random.random() - 0.5) / 10 / j, (random.random() - 0.5) / 5 / j)
         newTotalTransform = [t1+t2 for t1, t2 in zip(totalTransform, newTransform)]
 
         newDist = 0
@@ -202,5 +224,5 @@ def tryTranslations(oldPoints, newPoints):
             dist = newDist
             totalTransform = newTotalTransform
     
-    print(totalTransform, 'improved distance by', round(math.sqrt(initialDist)/len(pointMatches) - math.sqrt(dist)/len(pointMatches), 5))
+    # print(totalTransform, 'improved distance by', round(math.sqrt(initialDist)/len(pointMatches) - math.sqrt(dist)/len(pointMatches), 5))
     return totalTransform
