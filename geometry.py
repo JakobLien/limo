@@ -18,6 +18,9 @@ class Point:
 
     def xy(self):
         return self.x, self.y
+    
+    def orientation(self, angle=0.0):
+        return Orientation(self.x, self.y, angle=angle)
 
     def setData(self, key, value):
         p = Point(self.x, self.y)
@@ -30,7 +33,10 @@ class Point:
         y_new = -self.x * math.sin(angle) + self.y * math.cos(angle)
         return Point(x_new, y_new)
 
-    def angle(self):
+    def rotateAround(self, angle, point):
+        return self.toReferenceFrame(point.orientation()).rotate(angle).fromReferenceFrame(point.orientation())
+
+    def origoAngle(self):
         return math.atan2(self.y, self.x)
 
     def add(self, point):
@@ -50,17 +56,58 @@ class Point:
         return math.sqrt((self.x-point.x)**2 + (self.y-point.y)**2)
 
     # REFERANSERAMME
-    def toReferenceFrame(self, frame):
-        return self.add(-Point(frame[:2])).rotate(frame[2])
+    def toReferenceFrame(self, orientation):
+        return self.add(-orientation.point()).rotate(orientation.angle)
 
-    def fromReferenceFrame(self, frame):
-        return self.rotate(-frame[2]).add(Point(frame[:2]))
+    def fromReferenceFrame(self, orientation):
+        return self.rotate(-orientation.angle).add(orientation.point())
+
+        #return self.rotate(-frame[2]).add(Point(frame[:2]))
 
     def toScreen(self):
         return Point(toScreen(*self.xy()))
 
     def fromScreen(self):
         return Point(fromScreen(*self.xy()))
+
+
+class Orientation(Point):
+    'Punkt og retning'
+    def __init__(self, x, y=None, angle=0.0, data=None):
+        if y == None:
+            orientation = x
+            self.x = orientation[0]
+            self.y = orientation[1]
+            self.angle = orientation[2]
+        else:
+            self.x = x
+            self.y = y
+            self.angle = angle
+        self.data = data
+    
+    def __str__(self):
+        return f'Orientation({self.x}, {self.y}, {self.angle})'
+    
+    def xya(self):
+        return self.x, self.y, self.angle
+    
+    def point(self):
+        return Point(self.x, self.y)
+    
+    def add(self, orientation):
+        angle = 0.0
+        if isinstance(orientation, Orientation):
+            angle = orientation.angle
+        return Orientation(self.x + orientation.x, self.y + orientation.y, self.angle + angle)
+
+    def rotate(self, angle):
+        return Orientation(*super().rotate(angle).xy(), self.angle + angle)
+    
+    def toReferenceFrame(self, orientation):
+        return Orientation(*super().toReferenceFrame(orientation).xy(), angle=self.angle - orientation.angle)
+
+    def fromReferenceFrame(self, orientation):
+        return Orientation(*super().fromReferenceFrame(orientation).xy(), angle=self.angle + orientation.angle)
 
 
 class Line:
@@ -187,7 +234,7 @@ def closestPoint(point, points):
 def tryTranslations(oldPoints, newPoints):
     'Prøv deg fram til transformasjoner som gjør at points stemme bedre'
 
-    totalTransform = (0.0, 0.0, 0.0)
+    totalTransform = Orientation(0.0, 0.0, 0.0)
     pointMatches = []
     for p in newPoints:
         closest = closestPoint(p, oldPoints)
@@ -211,8 +258,9 @@ def tryTranslations(oldPoints, newPoints):
 
     for j in range(1, 20, 1):
         # Velg en tilfeldig transformasjon, men med stadig mindre bound på tilfeldigheten. Går gradvis 25 cm pr loop til 0.5 cm pr loop. 
-        newTransform = ((random.random() - 0.5) / 10 / j, (random.random() - 0.5) / 10 / j, (random.random() - 0.5) / 5 / j)
-        newTotalTransform = [t1+t2 for t1, t2 in zip(totalTransform, newTransform)]
+        newTransform = Orientation((random.random() - 0.5) / 10 / j, (random.random() - 0.5) / 10 / j, (random.random() - 0.5) / 5 / j)
+        newTotalTransform = totalTransform.add(newTransform)
+        # newTotalTransform = [t1+t2 for t1, t2 in zip(totalTransform, newTransform)]
 
         newDist = 0
         for p1, p2 in pointMatches:
