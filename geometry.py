@@ -29,11 +29,12 @@ class Point:
         return p
 
     def rotate(self, angle):
-        x_new = self.x * math.cos(angle) + self.y * math.sin(angle)
-        y_new = -self.x * math.sin(angle) + self.y * math.cos(angle)
+        x_new = self.x * math.cos(angle) - self.y * math.sin(angle)
+        y_new = self.x * math.sin(angle) + self.y * math.cos(angle)
         return Point(x_new, y_new)
 
     def rotateAround(self, angle, point):
+        # print(self, self.toReferenceFrame(point.orientation()), self.toReferenceFrame(point.orientation()).rotate(angle), self.toReferenceFrame(point.orientation()).rotate(angle).fromReferenceFrame(point.orientation()))
         return self.toReferenceFrame(point.orientation()).rotate(angle).fromReferenceFrame(point.orientation())
 
     def origoAngle(self):
@@ -57,10 +58,10 @@ class Point:
 
     # REFERANSERAMME
     def toReferenceFrame(self, orientation):
-        return self.add(-orientation.point()).rotate(orientation.angle)
+        return self.add(-orientation.point()).rotate(-orientation.angle)
 
     def fromReferenceFrame(self, orientation):
-        return self.rotate(-orientation.angle).add(orientation.point())
+        return self.rotate(orientation.angle).add(orientation.point())
 
         #return self.rotate(-frame[2]).add(Point(frame[:2]))
 
@@ -125,9 +126,13 @@ class Line:
         return lineDistance(p1, p2, p3, bounded=bounded)
 
 
-def getUnitPointFromAngle(i, theta=0):
+def unitCirclePoint(angle):
+    return Point(1, 0).rotate(angle)
+
+
+def getUnitPointFromAngle(index):
     'Returns a (x, y) touple on the unit circle from an index in the Lidar list'
-    return Point(1, 0).rotate(-2 * math.pi * (i + 215) / 430) # Den første målingen e rett bakover
+    return unitCirclePoint(2 * math.pi * (index + 215) / 430) # Den første målingen e rett bakover
 
 
 def closestPointOnLine(p1, p2, p3, bounded=True):
@@ -157,6 +162,13 @@ def lineDistance(p1, p2, p3, bounded=True):
         return p1.distance(p3)
     return abs((p2.y - p1.y) * p3.x - (p2.x - p1.x) * p3.y + p2.x * p1.y - p2.y * p1.x) \
         / p1.distance(p2)
+
+
+def angleFromPoints(p1, p2, p3):
+    'Finn vinkelen p1, p2, p3. (med p1 som høyre vinkelbein)'
+    p1Angle = Point(p1.x-p2.x, p1.y-p2.y).origoAngle()
+    p3Angle = Point(p3.x-p2.x, p3.y-p2.y).origoAngle()
+    return p3Angle - p1Angle
 
 
 def toScreen(x, y):
