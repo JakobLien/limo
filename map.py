@@ -8,7 +8,7 @@ from driving import AStar, Turn
 os.environ["DISPLAY"] = ":0" # Gjør at pygame åpne vindu på roboten heller enn over SSH
 
 from benchmark import Benchmark
-from geometry import Orientation, Point, closestPoint, closestPointIndex, getUnitPointFromAngle, splitAndMerge, tryTranslations, unitCirclePoint
+from geometry import Orientation, Point, angleFromPoints, closestPoint, closestPointIndex, getUnitPointFromAngle, splitAndMerge, tryTranslations, straightWheelDriver, circularWheelDriver, unitCirclePoint
 import rospy
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
@@ -119,6 +119,23 @@ while True:
 
     benchmark.start('UI and Drive')
 
+    # Greier for å debug turn sin free metode. 
+    # turn1 = Turn(Orientation(0, 0, 0), 0.5 / 10, duration=3)
+    # pygame.draw.circle(screen, "red", turn1.turnCenter.toScreen().xy(), 10)
+    # pygame.draw.circle(screen, "red", turn1.endPos.toScreen().xy(), 10)
+    # if turn1.turnCenter:
+    #     pygame.draw.circle(screen, "red", turn1.turnCenter.toScreen().xy(), turn1.turnRadius*100, width=3)
+
+    # # print(touchCord.xy(), turn1.free([touchCord]))
+
+    # for x in range(-30, 30):
+    #     for y in range(-30, 30):
+    #         pnt = Point(x/20, y/20)
+    #         if turn1.free([pnt]):
+    #             pygame.draw.circle(screen, "green", pnt.toScreen().xy(), 2)
+    #         else:
+    #             pygame.draw.circle(screen, "red", pnt.toScreen().xy(), 2)
+
     # BRUKER INPUT
     if pygame.mouse.get_pressed()[0]:
         pygame.draw.circle(screen, "blue", Point(pygame.mouse.get_pos()).xy(), 30)
@@ -126,24 +143,22 @@ while True:
 
         # print(touchCord.y)
 
-        # turn1 = Turn(Orientation(0, 0, 0), 0.5 / 10, duration=0.1)
-        # pygame.draw.circle(screen, "red", turn1.turnCenter.toScreen().xy(), 10)
-        # pygame.draw.circle(screen, "red", turn1.endPos.toScreen().xy(), 10)
-        # if turn1.turnCenter:
-        #     pygame.draw.circle(screen, "red", turn1.turnCenter.toScreen().xy(), turn1.turnRadius*100, width=3)
+        target = touchCord#.fromReferenceFrame(robotPos)
+        # print('Target:', target)
 
-        # print(touchCord.xy(), turn1.free([touchCord]))
+        pygame.draw.circle(screen, "blue", target.toScreen().xy(), 3)
 
-        # for x in range(-30, 30):
-        #     for y in range(-30, 30):
-        #         pnt = Point(x/20, y/20)
-        #         if turn1.free([pnt]):
-        #             pygame.draw.circle(screen, "green", pnt.toScreen().xy(), 2)
-        #         else:
-        #             pygame.draw.circle(screen, "red", pnt.toScreen().xy(), 2)
+        # # Debugging av wheelDrivers
+        # turnRadius = circularWheelDriver(target)
+        # pygame.draw.circle(screen, "red", Point(0, turnRadius).toScreen().xy(), 4)
+        # pygame.draw.circle(screen, "red", Point(0, turnRadius).toScreen().xy(), abs(turnRadius)*100, width=1)
+        # pygame.draw.circle(screen, "red", Point(0.2, 0).toScreen().xy(), 4)
+        # # cmd_vel.linear.x = target.distance(Point(0, 0)) / 20
+        # # cmd_vel.angular.z = 0.1 / turnRadius
+        # # cmd_vel_pub.publish(cmd_vel)
+        # pygame.draw.line(screen, "green", Point(0.2, 0).toScreen().xy(), Point(0, turnRadius).toScreen().xy(), 2)
+        # pygame.draw.line(screen, "green", Point(0.2, 0).toScreen().xy(), target.toScreen().xy(), 2)
 
-        target = touchCord.fromReferenceFrame(robotPos)
-        print('Target:', target)
         turns = AStar(robotPos, target, points)
         turnStart = None
 
@@ -152,7 +167,10 @@ while True:
             # print(t.endPos, target.distance(t.endPos))
             pygame.draw.circle(screen, "green", t.endPos.toReferenceFrame(robotPos).toScreen().xy(), 3)
             if t.turnCenter:
+                # Tegn på veian den kjøre
+                pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), t.turnRadius*100 - 20, width=1)
                 pygame.draw.circle(screen, "red", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), t.turnRadius*100, width=1)
+                pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), t.turnRadius*100 + 20, width=1)
 
     # KJØRING
     if turns and not pygame.mouse.get_pressed()[0]:
@@ -175,19 +193,11 @@ while True:
             partway = currTurn.partway((datetime.datetime.now() - turnStart).total_seconds() % 3).toReferenceFrame(robotPos)
             pygame.draw.circle(screen, "blue", partway.toScreen().xy(), 3)
 
-            print(partway.x, partway.y)
+            turnRadius = circularWheelDriver(partway)
 
-            # TODO: Dette funke greit for linear.x, men for vinkelen på hjula treng vi å gjør bedre. 
-            # Vi må konverter fra vinkelen fra bilen te punktet, til rotasjonshastighet som gjør at hjulan peke på det punktet. 
-            # Merk også her at hjulan e foran der bilen rotere rundt, altså for at hjulan ska pek på punktet må vi ta høyde for det.
-
-            # Så: 
-            # - Ta origoAngle av punktet i robotens referanseramme (men justert så sentrum kjem på forhjula)
-            # - Ta den vinkelen 90 grader til høyre/venstre, for å finn sentrum av sirkelen vi må roter rundt
-            # - Bruk så sentrum av sirkelen te å regn ut ka rotasjonshastighet vi må ha. 
-
-            cmd_vel.linear.x = partway.x
-            cmd_vel.angular.z = partway.y
+            # Hold den 40 cm bak punktet (forhjulan beregnes som 20 cm foran bakre aksling), og kjør maks 0.2 m/s
+            cmd_vel.linear.x = min(max(0, partway.distance(Point(0, 0)) - 0.3), 0.2) 
+            cmd_vel.angular.z = cmd_vel.linear.x / turnRadius # Pek hjulan direkte mot partway
         else:
             cmd_vel.linear.x = 0
             cmd_vel.angular.z = 0

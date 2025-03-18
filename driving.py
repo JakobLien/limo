@@ -58,7 +58,7 @@ class Turn:
         else:
             return self.startPos.rotateAround(-self.arcAngle * ratio, self.turnCenter)
 
-    def free(self, points, margin=0.3):
+    def free(self, points, margin=0.25):
         'Om det e nån punkt i points som bilen kræsje med. Margin e kor my klaring vi ønske for bilen på hver side'
         # For dette trur e vi bare treng å filtrer ut dem punktan som e i retning den anndelen av sirkelen vi kjøre i, 
         # for så å sjekk at avstanden fra sentrum av sirkelen e minst margin differanse fra radius av sirkelen. 
@@ -76,17 +76,17 @@ class Turn:
 
         for point in points:
             # Sjekk at avstand fra turn center stemme ish
-            if not minRadius < point.distance(turnCenter) < maxRadius:
+            if not (minRadius < point.distance(turnCenter) < maxRadius):
                 # print('RadiusMiss')
                 continue
 
             # Sjekk at punktet e på rett del av sirkelen
             if self.turnSpeed > 0:
                 # I venstre sving ska vi gi punktet, også sirkelsentrum, også bilen
-                angle = angleFromPoints(point, turnCenter, self.startPos)
+                angle = angleFromPoints(self.startPos, turnCenter, point)
             else:
                 # I høyre sving ska vi gi bilen, også sirkelsentrum, også punktet
-                angle = angleFromPoints(self.startPos, turnCenter, point)
+                angle = angleFromPoints(point, turnCenter, self.startPos)
 
             if 0 < angle < (self.arcLength + margin * 1.5) / self.turnRadius:
                 return False
@@ -103,19 +103,13 @@ def AStar(startPos, goalPos, obstacles):
     Returne en liste av påfølgende Turns, som kan utføres for å nå en posisjon med A*, uten driftkorrigering.
     Om vi replanne ofte nok burda det ikkje bli et problem.
     '''
-    # Te å begynne med prøve vi oss på 5 ulike vinklinga pr gong
-
-    # Vi må kontinuerlig behold en prioritering av dem beste kjøringan for å kom imål.
-    # Ha en liste med touples, altså A* score og Turn sekvens. 
-    # Så gjelds det bare å dupliser Turns inntil vi når målet?
-
-    tries = 5
+    tries = 7
     triesHalf = tries // 2
 
     turnSequences = []
     turnSequencesRating = []
 
-    for _ in range(100):
+    for _ in range(500):
         # Legg til dem 5 nye turn sekvensan, i lista, og fjern den vi jobbe fra
         if turnSequences:
             turnSequence = turnSequences.pop(0)
@@ -138,7 +132,7 @@ def AStar(startPos, goalPos, obstacles):
 
             turnRating = rateTurns(goalPos, turnSeq)
 
-            # Sett inn på rett plass, for å slepp å sorter 
+            # Sett inn på rett plass, for å slepp å sorter heile greia hver gong:)
             for seqIndex in range(len(turnSequences)+1):
                 if seqIndex == len(turnSequences):
                     turnSequences.append(turnSeq)

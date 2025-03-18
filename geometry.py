@@ -286,3 +286,49 @@ def tryTranslations(oldPoints, newPoints):
     
     # print(totalTransform, 'improved distance by', round(math.sqrt(initialDist)/len(pointMatches) - math.sqrt(dist)/len(pointMatches), 5))
     return totalTransform
+
+
+def straightWheelDriver(point: Point):
+    ''''
+    For et punkt relativt til bilen gir dette turn radius som gjør at framhjulan peke på det punktet. 
+    Speed / Turn radius = turn speed:)
+    Turn radiusen e te venstre, så om man ska sving te høyre e turn radius negativ. 
+
+    Punktet må vær i bilens referanseramme!
+    '''
+
+    if point.y == 0:
+        return math.inf
+
+    p = point
+    if p.x < 0.2:
+        p = Point(0.2, p.y)
+
+    wheelAngle = p.add(Point(-0.2, 0)).origoAngle()
+    # wheelAngle = p.origoAngle()
+
+    # Vinkelen trekanten av sirkel sentrum, bakre hjul og midt mellom framre hjul. 
+    innerWheelAngle = math.pi - (wheelAngle + math.copysign(math.pi / 2, wheelAngle))
+
+    turnRadius = abs(math.tan(innerWheelAngle) * 0.2)
+
+    if p.y > 0:
+        return max(turnRadius, 0.4)
+    else:
+        return min(-turnRadius, -0.4)
+
+
+def circularWheelDriver(point: Point):
+    '''
+    Samme som over, bare at denne ikkje skal pek forhjula på punktet. I stedet skal denne gi turning radius som 
+    resultere i at vi når det punktet om vi held den turning radiusen. 
+    '''
+    if point.y == 0:
+        return math.inf
+
+    # Formelen for en sirkel tilsie at dette bli (x**2 + y**2) / 2y, og e bekrefte visuelt at det stemme. 
+
+    if point.y > 0:
+        return max((point.x**2 + point.y**2) / (2*point.y), 0.4)
+    else:
+        return min((point.x**2 + point.y**2) / (2*point.y), -0.4)
