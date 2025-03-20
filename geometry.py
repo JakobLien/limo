@@ -16,6 +16,11 @@ class Point:
     def __str__(self):
         return f'Point({self.x}, {self.y})'
 
+    def __eq__(self, other):
+        if type(other) is not Point:
+            return False
+        return self.x == other.x and self.y == other.y
+
     def xy(self):
         return self.x, self.y
     
@@ -89,6 +94,11 @@ class Orientation(Point):
     def __str__(self):
         return f'Orientation({self.x}, {self.y}, {self.angle})'
     
+    def __eq__(self, other):
+        if type(other) is not Orientation:
+            return False
+        return self.x == other.x and self.y == other.y and self.angle == other.angle
+
     def xya(self):
         return self.x, self.y, self.angle
     
@@ -130,9 +140,9 @@ def unitCirclePoint(angle):
     return Point(1, 0).rotate(angle)
 
 
-def getUnitPointFromAngle(index):
+def getUnitPointFromAngle(index, angles=380, correction=0):
     'Returns a (x, y) touple on the unit circle from an index in the Lidar list'
-    return unitCirclePoint(2 * math.pi * (index + 215) / 430) # Den første målingen e rett bakover
+    return unitCirclePoint(2 * math.pi * (index + 215) / angles + correction) # Den første målingen e rett bakover
 
 
 def closestPointOnLine(p1, p2, p3, bounded=True):
@@ -168,7 +178,7 @@ def angleFromPoints(p1, p2, p3):
     'Finn vinkelen p1, p2, p3. (med p1 som høyre vinkelbein)'
     p1Angle = Point(p1.x-p2.x, p1.y-p2.y).origoAngle()
     p3Angle = Point(p3.x-p2.x, p3.y-p2.y).origoAngle()
-    return p3Angle - p1Angle
+    return (p3Angle - p1Angle) % (2 * math.pi)
 
 
 def toScreen(x, y):

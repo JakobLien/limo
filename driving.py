@@ -3,72 +3,48 @@ import math
 from geometry import angleFromPoints, lineDistance, unitCirclePoint
 
 class Turn:
-    def __init__(self, startPos, turnSpeed, speed=0.1, duration=3):
-        'Så leng vi held oss på speed=0.1 e max turnSpeed i teorien på 0.1/0.4=0.25'
-        # Kunna også tatt duration som argument? Hmm
-        if duration <= 0:
-            raise Exception('Must have positive duration.')
-        
-        if speed <= 0:
-            raise Exception('Must have positive speed')
+    def __init__(self, startPos, turnRadius, distance):
+        '''
+        Positiv turnRadius e te venstre. For rett fram bruk turnRadius = math.inf
+        Positiv distance e framover. 
+        '''
+        if distance == 0:
+            raise Exception('Must have nonzero distance')
+        self.distance = distance
+
+        if turnRadius == 0:
+            raise Exception('Must have nonzero turn radius')
+        self.turnRadius = math.copysign(max(abs(turnRadius), 0.4), turnRadius)
 
         self.startPos = startPos
-        self.turnSpeed = turnSpeed
-        self.speed = speed
-        self.duration = duration
 
-        if self.turnSpeed == 0:
-            self.turnRadius = math.inf
+        if math.isinf(self.turnRadius):
+            self.turnCenter = None
         else:
-            self.turnRadius = abs(self.speed) / abs(self.turnSpeed)
-
-        self.arcLength = self.duration * abs(self.speed)
-
-        self.arcAngle = self.arcLength / self.turnRadius
-
-        # Om vi ikkje svinge e det ingen sentrum av svingen
-        if self.turnSpeed == 0:
-            self.turnCenter =  None
-        elif self.turnSpeed > 0:
-            # Return punktet 90 grader direkte til venstre for roboten. 
             self.turnCenter = self.startPos.add(unitCirclePoint(self.startPos.angle + math.pi / 2).scale(self.turnRadius))
+
+        self.endPos = self.partway(abs(distance), clamp=False)
+
+    def partway(self, distance, clamp=True):
+        if distance < 0:
+            raise Exception('Can\'t have negative distance here')
+
+        if clamp:
+            distance = min(max(0, distance), self.distance) if self.distance > 0 else min(max(self.distance, distance), 0)
+
+        if math.isinf(self.turnRadius):
+            return self.startPos.add(unitCirclePoint(self.startPos.angle).scale(math.copysign(distance, self.distance)))
         else:
-            # Return punktet 90 grader direkte til høyre for roboten. 
-            self.turnCenter = self.startPos.add(unitCirclePoint(self.startPos.angle - math.pi / 2).scale(self.turnRadius))
-
-        if self.turnSpeed == 0:
-            self.endPos = self.startPos.add(unitCirclePoint(self.startPos.angle).scale(self.arcLength))
-        elif self.turnSpeed > 0:
-            self.endPos = self.startPos.rotateAround(self.arcAngle, self.turnCenter)
-        else:
-            self.endPos = self.startPos.rotateAround(-self.arcAngle, self.turnCenter)
-
-    def partway(self, time):
-        if time < 0:
-            return self.startPos
-        elif time > self.duration:
-            return self.endPos
-
-        ratio = time / self.duration
-
-        if self.turnSpeed == 0:
-            return self.startPos.add(unitCirclePoint(self.startPos.angle).scale(self.arcLength * ratio))
-        elif self.turnSpeed > 0:
-            return self.startPos.rotateAround(self.arcAngle * ratio, self.turnCenter)
-        else:
-            return self.startPos.rotateAround(-self.arcAngle * ratio, self.turnCenter)
+            return self.startPos.rotateAround(math.copysign(distance, self.distance) / self.turnRadius , self.turnCenter)
 
     def free(self, points, margin=0.25):
         'Om det e nån punkt i points som bilen kræsje med. Margin e kor my klaring vi ønske for bilen på hver side'
         # For dette trur e vi bare treng å filtrer ut dem punktan som e i retning den anndelen av sirkelen vi kjøre i, 
         # for så å sjekk at avstanden fra sentrum av sirkelen e minst margin differanse fra radius av sirkelen. 
-        turnCenter = self.turnCenter
-        turnRadius = self.turnRadius
+        minRadius = abs(self.turnRadius) - margin
+        maxRadius = abs(self.turnRadius) + margin
 
-        minRadius = turnRadius - margin
-        maxRadius = turnRadius + margin
-
-        if self.turnSpeed == 0:
+        if math.isinf(self.turnRadius):
             for point in points:
                 if lineDistance(self.startPos, self.endPos, point) < margin:
                     return False
@@ -76,40 +52,71 @@ class Turn:
 
         for point in points:
             # Sjekk at avstand fra turn center stemme ish
-            if not (minRadius < point.distance(turnCenter) < maxRadius):
-                # print('RadiusMiss')
+            if not (minRadius < point.distance(self.turnCenter) < maxRadius):
                 continue
 
             # Sjekk at punktet e på rett del av sirkelen
-            if self.turnSpeed > 0:
-                # I venstre sving ska vi gi punktet, også sirkelsentrum, også bilen
-                angle = angleFromPoints(self.startPos, turnCenter, point)
+            if (self.turnRadius > 0) == (self.distance > 0):
+                angle = angleFromPoints(self.startPos, self.turnCenter, point)
             else:
-                # I høyre sving ska vi gi bilen, også sirkelsentrum, også punktet
-                angle = angleFromPoints(point, turnCenter, self.startPos)
+                angle = angleFromPoints(point, self.turnCenter, self.startPos)
 
-            if 0 < angle < (self.arcLength + margin * 1.5) / self.turnRadius:
+            if 0 < angle < (abs(self.distance) + margin) / abs(self.turnRadius):
                 return False
 
         return True
 
 
+class TurnManager():
+    'Håndtere konverteringen av en turn sequence til et punkt man kan følg etter.'
+    def __init__(self, turns=[]):
+        self.turns = turns
+
+    @property
+    def distance(self):
+        return sum([abs(t.distance) for t in self.turns])
+
+    def currTurn(self, distance):
+        if not self.turns:
+            return None
+
+        distanceRemaining = distance
+
+        turn = None
+        for i, t in enumerate(self.turns):
+            turn = t
+            if distanceRemaining - abs(t.distance) < 0 or t == self.turns[-1]:
+                break
+            distanceRemaining -= abs(t.distance)
+        return turn
+
+    def partway(self, distance, ahead=0.3, clamp=True):
+        'Call partway for den turnen som e på den distancen'
+        turn = self.currTurn(distance)
+        if turn:
+            return turn.partway(distance - sum([abs(t.distance) for t in self.turns[0:self.turns.index(turn)]]) + ahead, clamp=clamp)
+
+
 def rateTurns(goalPos, turns):
-    return sum([t.arcLength for t in turns]) + goalPos.distance(turns[-1].endPos)
+    return sum([abs(t.distance) for t in turns]) + goalPos.distance(turns[-1].endPos)
 
 
-def AStar(startPos, goalPos, obstacles):
-    ''''
-    Returne en liste av påfølgende Turns, som kan utføres for å nå en posisjon med A*, uten driftkorrigering.
-    Om vi replanne ofte nok burda det ikkje bli et problem.
+def AStar(startPos, goalPos, obstacles, stepLength=0.3, stepAngles=5):
     '''
-    tries = 7
-    triesHalf = tries // 2
+    Returne en liste av påfølgende Turns, som kan utføres for å nå en posisjon med A*, uten driftkorrigering. 
+    Om vi replanne ofte nok burda det ikkje bli et problem. 
+    La stepAngles vær et oddetall så vi får med kjøring rett fram og bak:) 
+    '''
+    turnRadiusAndStep = []
+    for i in range(-(stepAngles//2), stepAngles//2+1):
+        # Konverter fra i=-n...n til turning radius slik at vi får en lineær endring i turning speed
+        turnRadiusAndStep.append((stepAngles//2 * 0.4 / i if i != 0 else math.inf, stepLength))
+        turnRadiusAndStep.append((stepAngles//2 * 0.4 / i if i != 0 else math.inf, -stepLength))
 
     turnSequences = []
     turnSequencesRating = []
 
-    for _ in range(500):
+    for _ in range(100):
         # Legg til dem 5 nye turn sekvensan, i lista, og fjern den vi jobbe fra
         if turnSequences:
             turnSequence = turnSequences.pop(0)
@@ -117,15 +124,13 @@ def AStar(startPos, goalPos, obstacles):
         else:
             turnSequence = []
 
-        for i in range(-triesHalf, triesHalf+1):
+        for turnRadius, step in turnRadiusAndStep:
             if turnSequence:
-                turn = Turn(turnSequence[-1].endPos, i * 0.25/triesHalf)
+                turn = Turn(turnSequence[-1].endPos, turnRadius, step)
             else:
-                turn = Turn(startPos, i * 0.25/triesHalf)
+                turn = Turn(startPos, turnRadius, step)
 
             if not turn.free(obstacles):
-                # Skip, kan ikkje kjør der
-                # print('Blocked by point')
                 continue
 
             turnSeq = turnSequence + [turn]
@@ -146,7 +151,7 @@ def AStar(startPos, goalPos, obstacles):
                 turnSequencesRating.insert(seqIndex, rateTurns(goalPos, turnSeq))
                 break
 
-        if goalPos.distance(turnSequences[0][-1].endPos) < 0.5:
-            return turnSequences[0] if turnSequences else None
+        if goalPos.distance(turnSequences[0][-1].endPos) < stepLength * 2/3:
+            break
 
     return turnSequences[0] if turnSequences else None

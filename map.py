@@ -4,7 +4,7 @@ import pygame
 import math
 import os
 
-from driving import AStar, Turn
+from driving import AStar, Turn, TurnManager
 os.environ["DISPLAY"] = ":0" # Gjør at pygame åpne vindu på roboten heller enn over SSH
 
 from benchmark import Benchmark
@@ -89,7 +89,8 @@ while True:
         if r < 0.25:
             continue
         # Skaff punktet i den globale referanseramma
-        points.append(getUnitPointFromAngle(i).scale(r).add(Point(0.2, 0)).fromReferenceFrame(robotPos))
+        # Her korrigere vi 27 grader unna midta, usikker på koffor vi må det. 
+        points.append(getUnitPointFromAngle(i, angles=len(ranges), correction=-math.pi * 27/180).scale(r).add(Point(0.2, 0)).fromReferenceFrame(robotPos))
 
     benchmark.start('Draw screen')
 
@@ -119,22 +120,20 @@ while True:
 
     benchmark.start('UI and Drive')
 
-    # Greier for å debug turn sin free metode. 
-    # turn1 = Turn(Orientation(0, 0, 0), 0.5 / 10, duration=3)
-    # pygame.draw.circle(screen, "red", turn1.turnCenter.toScreen().xy(), 10)
-    # pygame.draw.circle(screen, "red", turn1.endPos.toScreen().xy(), 10)
-    # if turn1.turnCenter:
-    #     pygame.draw.circle(screen, "red", turn1.turnCenter.toScreen().xy(), turn1.turnRadius*100, width=3)
-
-    # # print(touchCord.xy(), turn1.free([touchCord]))
+    # # Greier for å debug turn sin free metode. 
+    # testTurn = Turn(Orientation(0, 0, 0), 1, -0.5)
+    # pygame.draw.circle(screen, "red", testTurn.turnCenter.toScreen().xy(), 10)
+    # pygame.draw.circle(screen, "blue", testTurn.endPos.toScreen().xy(), 10)
+    # if testTurn.turnCenter:
+    #     pygame.draw.circle(screen, "red", testTurn.turnCenter.toScreen().xy(), abs(testTurn.turnRadius)*100, width=1)
 
     # for x in range(-30, 30):
     #     for y in range(-30, 30):
     #         pnt = Point(x/20, y/20)
-    #         if turn1.free([pnt]):
-    #             pygame.draw.circle(screen, "green", pnt.toScreen().xy(), 2)
+    #         if testTurn.free([pnt]):
+    #             pygame.draw.circle(screen, "green", pnt.toScreen().xy(), 1)
     #         else:
-    #             pygame.draw.circle(screen, "red", pnt.toScreen().xy(), 2)
+    #             pygame.draw.circle(screen, "red", pnt.toScreen().xy(), 1)
 
     # BRUKER INPUT
     if pygame.mouse.get_pressed()[0]:
@@ -143,8 +142,7 @@ while True:
 
         # print(touchCord.y)
 
-        target = touchCord#.fromReferenceFrame(robotPos)
-        # print('Target:', target)
+        target = touchCord.fromReferenceFrame(robotPos)
 
         pygame.draw.circle(screen, "blue", target.toScreen().xy(), 3)
 
@@ -160,47 +158,56 @@ while True:
         # pygame.draw.line(screen, "green", Point(0.2, 0).toScreen().xy(), target.toScreen().xy(), 2)
 
         turns = AStar(robotPos, target, points)
+        turns = TurnManager(turns)
         turnStart = None
 
     if turns:
-        for t in turns:
-            # print(t.endPos, target.distance(t.endPos))
-            pygame.draw.circle(screen, "green", t.endPos.toReferenceFrame(robotPos).toScreen().xy(), 3)
+        for t in turns.turns:
+            pygame.draw.circle(screen, "green", t.endPos.toReferenceFrame(robotPos).toScreen().xy(), 5)
             if t.turnCenter:
                 # Tegn på veian den kjøre
-                pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), t.turnRadius*100 - 20, width=1)
-                pygame.draw.circle(screen, "red", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), t.turnRadius*100, width=1)
-                pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), t.turnRadius*100 + 20, width=1)
+                pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), abs(t.turnRadius)*100 - 20, width=1)
+                pygame.draw.circle(screen, "red", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), abs(t.turnRadius)*100, width=1)
+                pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), abs(t.turnRadius)*100 + 20, width=1)
+
+    speed = 0.1
 
     # KJØRING
     if turns and not pygame.mouse.get_pressed()[0]:
         if not turnStart:
             turnStart = datetime.datetime.now()
-        
-        currTurn = None
-        for turnIndex in range(len(turns)):
-            if sum([t.duration for t in turns[0:turnIndex+1]]) > (datetime.datetime.now() - turnStart).total_seconds():
-                currTurn = turns[turnIndex]
-                print('Turn nr', turnIndex, currTurn.turnSpeed)
-                break
 
-        if currTurn:
-            # # Kjør direkte
-            # cmd_vel.linear.x = 0.1
-            # cmd_vel.angular.z = currTurn.turnSpeed + (random.random() - 0.5) / 10
+        currDist = (datetime.datetime.now() - turnStart).total_seconds() * speed
 
+        if currDist > turns.distance:
+            turns, turnStart = None, None
+        else:
             # Utfør planen ved å følg et punkt (for å korriger)
-            partway = currTurn.partway((datetime.datetime.now() - turnStart).total_seconds() % 3).toReferenceFrame(robotPos)
+            partway = turns.partway(currDist, 0.3, clamp=False).toReferenceFrame(robotPos)
             pygame.draw.circle(screen, "blue", partway.toScreen().xy(), 3)
 
             turnRadius = circularWheelDriver(partway)
 
-            # Hold den 40 cm bak punktet (forhjulan beregnes som 20 cm foran bakre aksling), og kjør maks 0.2 m/s
-            cmd_vel.linear.x = min(max(0, partway.distance(Point(0, 0)) - 0.3), 0.2) 
-            cmd_vel.angular.z = cmd_vel.linear.x / turnRadius # Pek hjulan direkte mot partway
-        else:
+            # Hold den 40 cm bak punktet (forhjulan beregnes som 20 cm foran bakre aksling), og kjør maks speed + 0.1 m/s
+            # Dette funke ihvertfall begge veia:)
+            cmd_vel.linear.x = min(max(-speed-0.05, math.copysign(max(0, partway.distance(Point(0, 0)) - 0.25), partway.x)), speed+0.05)
+            cmd_vel.angular.z = cmd_vel.linear.x / turnRadius
+
+        # Collision avoidance, gitt at vi kjøre slik som no 30 cm til. 
+        if not Turn(robotPos, turnRadius, math.copysign(0.3, cmd_vel.linear.x)).free(points, margin=0.15):
+            print('COLISSION AVOIDANCE')
+            turns, turnStart = None, None
             cmd_vel.linear.x = 0
             cmd_vel.angular.z = 0
+
+        # if currTurn:
+        #     # # Kjør direkte
+        #     # cmd_vel.linear.x = 0.1
+        #     # cmd_vel.angular.z = currTurn.turnSpeed + (random.random() - 0.5) / 10
+
+        # else:
+        #     cmd_vel.linear.x = 0
+        #     cmd_vel.angular.z = 0
 
         # Dette er at den bare sikte på punktet du trykke på, naivt. 
         # Burda skrevet en bedre versjon av dette med nøyaktige svinger. 
