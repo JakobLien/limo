@@ -1,333 +1,119 @@
-import datetime
-import random
-import pygame
 import math
-import os
+import pygame
+from geometry import Orientation, Point, closestPoint, pointIndexClosestToAngle, splitAndMerge, tryTranslations
 
-from driving import AStar, Turn, TurnManager
-os.environ["DISPLAY"] = ":0" # Gjør at pygame åpne vindu på roboten heller enn over SSH
 
-from benchmark import Benchmark
-from geometry import Orientation, Point, angleFromPoints, closestPoint, closestPointIndex, getUnitPointFromAngle, splitAndMerge, tryTranslations, straightWheelDriver, circularWheelDriver, unitCirclePoint
-import rospy
-from sensor_msgs.msg import LaserScan
-from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Twist
+class LocalizationMap:
+    'Et kart for features, for localization'
+    def __init__(self):
+        self.points = []
+        self.pointsConfidence = []
 
-# pygame setup
-pygame.init()
-screen = pygame.display.set_mode((600, 600))
-clock = pygame.time.Clock()
-running = True
+    def addPointsAndLocalize(self, robotPos, points, localize=True):
+        'Returne en ny robotPos etter å ha justert med alle punktan.'
 
-ranges = [0 for i in range(430)]
+        # Skriv om så vi heller har en confidence på punktan våre, enda en liste altså
+        # Heller enn å ha data på hvert eneste punkt, for det komplisert koden en god del føle e. 
 
-# Callback function that is triggered each time a message is received on the /scan topic
-def scan_callback(msg):
-    global ranges
-    ranges = [r if msg.range_min < r < msg.range_max else None for r in msg.ranges]
+        featurePoints = splitAndMerge(points)
 
-# Initialize the ROS node
-rospy.init_node('listener')
+        # Korriger posisjon dersom vi e i bevegelse. 
+        offset = Orientation(0.0, 0.0, 0.0)
+        if localize:
+            offset = tryTranslations(self.points, featurePoints)
 
-# Subscribe to the /scan topic på 10 hz
-rospy.Subscriber('/scan', LaserScan, scan_callback)
+            # # TODO: Jobb meir med å juster odometri dataen, det virke skikkelig nyttig å kunna gjør, og e trur det skal vær mulig å gjør!
+            # offsetInRobotFrame = [*Point(offset).toReferenceFrame(Orientation(0, 0, robotPos.angle)).xy(), offset[2]]
+            # offsetSum = [t1+t2 for t1, t2 in zip(offsetSum, offsetInRobotFrame)]
+            # # Juster odometridataen basert på dette
+            # pygame.draw.circle(screen, "green", Point(offsetInRobotFrame).scale(100).toScreen().xy(), 10)
+            # # # Om du korrigere deg framover, øk den den
+            # # odomModifierX += Point(offset[:2]).toReferenceFrame(Orientation(0, 0, robotPos.angle)).x / 2
+            # # # Om du svinge venstre og korrigere til venstre, øk den
+            # # odomModifierZ += cmd_vel.angular.z * offset[2] / 2
 
-robotPos = Orientation(0.0, 0.0, 0.0) # x, y og vinkel der x e fram, og radian vinkel (positiv venstre)
+            robotPos = robotPos.toReferenceFrame(offset)
 
-odomModifierX = 1
-odomModifierZ = 0.6
-
-def odom_callback(msg):
-    global robotPos
-    robotPos.x += msg.twist.twist.linear.x / 50 * math.cos(robotPos.angle) * odomModifierX
-    robotPos.y += msg.twist.twist.linear.x / 50 * math.sin(robotPos.angle) * odomModifierX
-    robotPos.angle += msg.twist.twist.angular.z / 50 * odomModifierZ
-
-# Subscribe to the /odom topic på 50 hz
-rospy.Subscriber('/odom', Odometry, odom_callback)
-
-# Create a publisher for the /cmd_vel topic
-cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
-
-cmd_vel = Twist()
-
-isLine = False
-frameCount = 0
-touchCord = Point(0, 0)
-
-pointIndexes = []
-target = None
-
-# Liste av points som e hjørne punkt
-# Sida det bli veldig få punkt kan vi slepp å tenk på oppslagstid foreløpig
-globalMap = []
-# offset = [0, 0, 0]
-
-# offsetSum = [0, 0, 0]
-
-benchmark = Benchmark()
-
-turns = []
-turnStart = None
-
-while True:
-    # Kryss ut eller CTRL + C for å stopp programmet
-    if any([e.type == pygame.QUIT for e in pygame.event.get()]) or rospy.is_shutdown():
-        cmd_vel.linear.x = 0
-        cmd_vel.angular.z = 0
-        cmd_vel_pub.publish(cmd_vel)
-        break
-
-    benchmark.start('Point transform')
-
-    # INPUT TRANSFORMASJON
-    points = []
-    for i, r in enumerate(ranges):
-        if r == None:
-            continue
-        if r < 0.25:
-            continue
-        # Skaff punktet i den globale referanseramma
-        # Her korrigere vi 27 grader unna midta, usikker på koffor vi må det. 
-        points.append(getUnitPointFromAngle(i, angles=len(ranges), correction=-math.pi * 27/180).scale(r).add(Point(0.2, 0)).fromReferenceFrame(robotPos))
-
-    benchmark.start('Draw screen')
-
-    # TEGNING PÅ SKJERMEN
-    # Draw background to clear last frame
-    screen.fill("white")
-
-    # Tegn inn en bil på midta
-    pygame.draw.polygon(screen, "black", [
-        Point(0.2, 0).toScreen().xy(),
-        Point(-0.1, 0.1).toScreen().xy(),
-        Point(-0.1, -0.1).toScreen().xy()
-    ], 5)
-
-    for point in points:
-        pygame.draw.circle(screen, "grey", point.toReferenceFrame(robotPos).toScreen().xy(), 1)
-
-    # Skriv robotPos til skjermen
-    f = pygame.font.Font(size=32)
-    screen.blit(f.render(f'robotPos: ({round(robotPos.x, 2)}, {round(robotPos.y, 2)}, {round(robotPos.angle, 2)})', True, "black", "white"), (10, 10))
-
-    # offsetSumInRobotFrame = Point(offsetSum)
-
-    # screen.blit(f.render(f'offset: ({round(offsetSumInRobotFrame.x, 2)}, {round(offsetSumInRobotFrame.y, 2)}, {round(offsetSum[2], 2)})', True, "black", "white"), (10, 70))
-    # # screen.blit(f.render(f'odomModifierX: {round(odomModifierX, 2)}', True, "black", "white"), (10, 30))
-    # # screen.blit(f.render(f'odomModifierZ: {round(odomModifierZ, 2)}', True, "black", "white"), (10, 50))
-
-    benchmark.start('UI and Drive')
-
-    # # Greier for å debug turn sin free metode. 
-    # testTurn = Turn(Orientation(0, 0, 0), 1, -0.5)
-    # pygame.draw.circle(screen, "red", testTurn.turnCenter.toScreen().xy(), 10)
-    # pygame.draw.circle(screen, "blue", testTurn.endPos.toScreen().xy(), 10)
-    # if testTurn.turnCenter:
-    #     pygame.draw.circle(screen, "red", testTurn.turnCenter.toScreen().xy(), abs(testTurn.turnRadius)*100, width=1)
-
-    # for x in range(-30, 30):
-    #     for y in range(-30, 30):
-    #         pnt = Point(x/20, y/20)
-    #         if testTurn.free([pnt]):
-    #             pygame.draw.circle(screen, "green", pnt.toScreen().xy(), 1)
-    #         else:
-    #             pygame.draw.circle(screen, "red", pnt.toScreen().xy(), 1)
-
-    # BRUKER INPUT
-    if pygame.mouse.get_pressed()[0]:
-        pygame.draw.circle(screen, "blue", Point(pygame.mouse.get_pos()).xy(), 30)
-        touchCord = Point(pygame.mouse.get_pos()).fromScreen()
-
-        # print(touchCord.y)
-
-        target = touchCord.fromReferenceFrame(robotPos)
-
-        pygame.draw.circle(screen, "blue", target.toScreen().xy(), 3)
-
-        # # Debugging av wheelDrivers
-        # turnRadius = circularWheelDriver(target)
-        # pygame.draw.circle(screen, "red", Point(0, turnRadius).toScreen().xy(), 4)
-        # pygame.draw.circle(screen, "red", Point(0, turnRadius).toScreen().xy(), abs(turnRadius)*100, width=1)
-        # pygame.draw.circle(screen, "red", Point(0.2, 0).toScreen().xy(), 4)
-        # # cmd_vel.linear.x = target.distance(Point(0, 0)) / 20
-        # # cmd_vel.angular.z = 0.1 / turnRadius
-        # # cmd_vel_pub.publish(cmd_vel)
-        # pygame.draw.line(screen, "green", Point(0.2, 0).toScreen().xy(), Point(0, turnRadius).toScreen().xy(), 2)
-        # pygame.draw.line(screen, "green", Point(0.2, 0).toScreen().xy(), target.toScreen().xy(), 2)
-
-        turns = AStar(robotPos, target, points)
-        turns = TurnManager(turns)
-        turnStart = None
-
-    if turns:
-        for t in turns.turns:
-            pygame.draw.circle(screen, "green", t.endPos.toReferenceFrame(robotPos).toScreen().xy(), 5)
-            if t.turnCenter:
-                # Tegn på veian den kjøre
-                pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), abs(t.turnRadius)*100 - 20, width=1)
-                pygame.draw.circle(screen, "red", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), abs(t.turnRadius)*100, width=1)
-                pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(robotPos).toScreen().xy(), abs(t.turnRadius)*100 + 20, width=1)
-
-    speed = 0.1
-
-    # KJØRING
-    if turns and not pygame.mouse.get_pressed()[0]:
-        if not turnStart:
-            turnStart = datetime.datetime.now()
-
-        currDist = (datetime.datetime.now() - turnStart).total_seconds() * speed
-
-        if currDist > turns.distance:
-            turns, turnStart = None, None
-        else:
-            # Utfør planen ved å følg et punkt (for å korriger)
-            partway = turns.partway(currDist, 0.3, clamp=False).toReferenceFrame(robotPos)
-            pygame.draw.circle(screen, "blue", partway.toScreen().xy(), 3)
-
-            turnRadius = circularWheelDriver(partway)
-
-            # Hold den 40 cm bak punktet (forhjulan beregnes som 20 cm foran bakre aksling), og kjør maks speed + 0.1 m/s
-            # Dette funke ihvertfall begge veia:)
-            cmd_vel.linear.x = min(max(-speed-0.05, math.copysign(max(0, partway.distance(Point(0, 0)) - 0.25), partway.x)), speed+0.05)
-            cmd_vel.angular.z = cmd_vel.linear.x / turnRadius
-
-        # Collision avoidance, gitt at vi kjøre slik som no 30 cm til. 
-        if not Turn(robotPos, turnRadius, math.copysign(0.3, cmd_vel.linear.x)).free(points, margin=0.15):
-            print('COLISSION AVOIDANCE')
-            turns, turnStart = None, None
-            cmd_vel.linear.x = 0
-            cmd_vel.angular.z = 0
-
-        # if currTurn:
-        #     # # Kjør direkte
-        #     # cmd_vel.linear.x = 0.1
-        #     # cmd_vel.angular.z = currTurn.turnSpeed + (random.random() - 0.5) / 10
-
-        # else:
-        #     cmd_vel.linear.x = 0
-        #     cmd_vel.angular.z = 0
-
-        # Dette er at den bare sikte på punktet du trykke på, naivt. 
-        # Burda skrevet en bedre versjon av dette med nøyaktige svinger. 
-        # pygame.draw.circle(screen, "green", target.toReferenceFrame(robotPos).toScreen().xy(), 5)
-        # if target.distance(robotPos.point()) < 0.2:
-        #     target = None
-        # else:
-        #     targetForRobot = target.toReferenceFrame(robotPos)
-        #     cmd_vel.linear.x = 0.1 if targetForRobot.x > 0 else -0.1
-        #     cmd_vel.angular.z = targetForRobot.y * 4 * (1 if targetForRobot.x > 0 else -1)
-    else:
-        cmd_vel.linear.x = 0
-        cmd_vel.angular.z = 0
-    cmd_vel_pub.publish(cmd_vel)
-
-    benchmark.start('Split and merge')
-
-    # POSISJON KORRIGERING OG MAP MAINTENANCE
-    newPoints = splitAndMerge(points)
-
-    benchmark.start('Position correction')
-
-    # Korriger posisjon dersom vi e i bevegelse. 
-    offset = Orientation(0.0, 0.0, 0.0)
-    if cmd_vel.linear.x != 0:
-        offset = tryTranslations(globalMap, newPoints)
-
-        # # TODO: Jobb meir med å juster odometri dataen, det virke skikkelig nyttig å kunna gjør, og e trur det skal vær mulig å gjør!
-        # offsetInRobotFrame = [*Point(offset).toReferenceFrame(Orientation(0, 0, robotPos.angle)).xy(), offset[2]]
-
-        # offsetSum = [t1+t2 for t1, t2 in zip(offsetSum, offsetInRobotFrame)]
-
-        # # Juster odometridataen basert på dette
-        # pygame.draw.circle(screen, "green", Point(offsetInRobotFrame).scale(100).toScreen().xy(), 10)
-
-        # # # Om du korrigere deg framover, øk den den
-        # # odomModifierX += Point(offset[:2]).toReferenceFrame(Orientation(0, 0, robotPos.angle)).x / 2
-
-        # # # Om du svinge venstre og korrigere til venstre, øk den
-        # # odomModifierZ += cmd_vel.angular.z * offset[2] / 2
-
-        robotPos = robotPos.toReferenceFrame(offset)
-
-    benchmark.start('Maintain map: Alter points')
-
-    # Vedlikehold kartet
-    hitIndexes = []
-    for newPoint in [p.toReferenceFrame(offset) for p in newPoints]:
-        closest = closestPoint(newPoint, globalMap)
-        if not closest or newPoint.distance(closest) > 0.05:
-            # Nytt punkt
-            globalMap.append(newPoint.setData('miss', 8))
-        else:
-            # Eksisterende pukt
-            closestIndex = globalMap.index(closest)
-            globalMap[closestIndex] = closest.toward(newPoint).setData('miss', closest.data['miss'])
-            if closestIndex not in hitIndexes:
+        # Vedlikehold kartet
+        hitIndexes = []
+        featurePoints = [p.toReferenceFrame(offset) for p in featurePoints]
+        for i, featurePoint in enumerate(featurePoints):
+            closest = closestPoint(featurePoint, self.points)
+            if closest and featurePoint.distance(closest) < 0.1:
+                # Eksisterende pukt
+                closestIndex = self.points.index(closest)
+                self.points[closestIndex] = closest.toward(featurePoint, 0.2)
+                self.pointsConfidence[closestIndex] = max(self.pointsConfidence[closestIndex] - 1, 0)
                 hitIndexes.append(closestIndex)
+            else:
+                # Nytt punkt
+                # # TODO: Bare lag et nytt punkt dersom nabomåligen ikkje er rett atmed vinkelmessig, for å unngå
+                # # "hjørnepunkt" som bare er en konsekvens av obscurement
+                # prevPoint = featurePoints[i-1] if i-1 > 0 else None
+                # nextPoint = featurePoints[i+1] if i+1 < len(featurePoints) else None
 
-    benchmark.start('Maintain map: Obscurement')
+                # # Omskriv logikken: Hvis vi ikkje har nabo punktet e det lov, men hvis vi har det og det e langt foran,
+                # # da ska vi ikkje legg inn som nytt punkt. 
 
-    for i, p in enumerate(globalMap):
-        if i in hitIndexes:
-            # En mindre miss
-            globalMap[i] = p.setData('miss', max(p.data['miss'] - 1, 0))
-        else:
+                # if prevPoint.distance(Point(0, 0)) < 0.2 and nextPoint.distance(Point(0, 0)) < 0.2 and \
+                #     featurePoint.angluarDistance(prevPoint) < 5 * math.pi / 180 and \
+                #     featurePoint.angluarDistance(nextPoint) < 5 * math.pi / 180:
+
+                self.points.append(featurePoint)
+                self.pointsConfidence.append(7) # Denne tallverdien avgjør hvor frampå vi skal vær med å registrer hjørnepunkt
+
+        pointsInRobotFrame = [p.toReferenceFrame(robotPos) for p in points]
+
+        # For resten av punktan
+        deleteIndexes = []
+        for i, p in enumerate(self.points):
+            if i in hitIndexes:
+                continue
+
             # En potensiell miss, spørs på obscurement
             pInRobotFrame = p.toReferenceFrame(robotPos)
             pInRobotFrameAngle = pInRobotFrame.origoAngle()
 
-            bestPointIndexMax = len(points) - 1
-            bestPointIndexMin = 0
-            while bestPointIndexMax - bestPointIndexMin > 1:
-                bestPointIndex = int((bestPointIndexMax + bestPointIndexMin) / 2)
-                # Merk at Lidaren gir oss punktan fra stor til lav vinkel (venstre mot høyre)
-                if points[bestPointIndex].toReferenceFrame(robotPos).origoAngle() > pInRobotFrameAngle:
-                    bestPointIndexMax = bestPointIndex
-                else:
-                    bestPointIndexMin = bestPointIndex
-            measurementPoint = points[int((bestPointIndexMax + bestPointIndexMin) / 2)].toReferenceFrame(robotPos)
+            # # Binærsøk fram til rett måling
 
-            if abs(measurementPoint.origoAngle() - pInRobotFrame.origoAngle()) > 2 * math.pi / 430:
-                # Om næmreste målingens vinkel stemme dårlig overrens, bare senk sikkerheten om det e et rødt punkt. 
-                if p.data['miss'] > 5:
-                    globalMap[i] = p.setData('miss', p.data['miss'] + 1)
+            measurementPoint = pointsInRobotFrame[pointIndexClosestToAngle(pointsInRobotFrame, pInRobotFrameAngle)]
 
-            if measurementPoint.distance(Point(0, 0)) > pInRobotFrame.distance(Point(0, 0)):
-                # Det e bak roboten, minke sikkerheten
-                globalMap[i] = p.setData('miss', p.data['miss'] + 2)
-            elif p.data['miss'] > 5:
-                # Det e foran roboten, miss kun dersom om punktet e usikkert te å begynn med. 
-                # Dette for å unngå at når vi flytte noko mot roboten får vi veldig mange usikre punkt. 
-                globalMap[i] = p.setData('miss', p.data['miss'] + 1)
+            # bestPointIndexMin, bestPointIndexMax = 0, len(points) - 1
+            # while bestPointIndexMax - bestPointIndexMin > 1:
+            #     bestPointIndex = int((bestPointIndexMax + bestPointIndexMin) / 2)
+            #     # Merk at Lidaren gir oss punktan fra stor til lav vinkel (venstre mot høyre)
+            #     if points[bestPointIndex].toReferenceFrame(robotPos).origoAngle() > pInRobotFrameAngle:
+            #         bestPointIndexMax = bestPointIndex
+            #     else:
+            #         bestPointIndexMin = bestPointIndex
+            # measurementPoint = points[int((bestPointIndexMax + bestPointIndexMin) / 2)].toReferenceFrame(robotPos)
 
-    # Slett punkt med mange misses
-    globalMap = [p for p in globalMap if p.data['miss'] < 10]
+            if abs(measurementPoint.origoAngle() - pInRobotFrame.origoAngle()) < 5 * math.pi / 180 and \
+                measurementPoint.distance(Point(0, 0)) + 0.1 > pInRobotFrame.distance(Point(0, 0)):
+                # Om næmreste målingens vinkel e 5 grader unna, og punktet e foran målingen
+                self.pointsConfidence[i] = self.pointsConfidence[i] + 2
+            elif self.pointsConfidence[i] > 5:
+                # Punktet e ikkje synlig herifra, synk sikkerheten dersom vi e usikker på punktet
+                self.pointsConfidence[i] = self.pointsConfidence[i] + 1
 
-    benchmark.start('Draw features')
+            if self.pointsConfidence[i] >= 10:
+                # Må ta høyde for at lista bli kortar når vi slette ting, lettast å gjør det her:)
+                deleteIndexes.append(i - len(deleteIndexes))
 
-    for point in globalMap:
-        # if point.data.get('miss') < 3:
-        #     pygame.draw.circle(screen, "black", point.toReferenceFrame(robotPos).toScreen().xy(), 3)
+        for i in deleteIndexes:
+            self.points.pop(i)
+            self.pointsConfidence.pop(i)
 
-        if globalMap.index(point) in hitIndexes:
-            pygame.draw.circle(screen, "green", point.toReferenceFrame(robotPos).toScreen().xy(), 3)
-        elif point.data.get('miss') > 5:
-            pygame.draw.circle(screen, "red", point.toReferenceFrame(robotPos).toScreen().xy(), 3)
-        else:
-            pygame.draw.circle(screen, "black", point.toReferenceFrame(robotPos).toScreen().xy(), 3)
+        return robotPos
 
-    benchmark.stop()
+    def draw(self, robotPos, screen):
+        for i, point in enumerate(self.points):
+            # Heller enn å tegn indexes kan vi tegn dem med mørkhet basert på sikkerheten vår i punktan. 
+            # Virk bedre det syns e:)
 
-    # if frameCount % 10 == 0:
-    #     print(benchmark)
+            pygame.draw.circle(screen, pygame.Color(*[int(self.pointsConfidence[i] * 25.5) for _ in range(3)]), point.toReferenceFrame(robotPos).toScreen().xy(), 4)
 
-    pygame.display.flip() # Draw the screen
 
-    clock.tick(10)  # 10 FPS
-
-    frameCount += 1
-
-# Stopp ROS om vi kryssa ut
-rospy.signal_shutdown(0)
+# class NavigationMap:
+#     'Et map som har fleir rekka med punkt, som altså markere hjørnan av veggan'
+#     pass

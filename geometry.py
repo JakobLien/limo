@@ -60,6 +60,9 @@ class Point:
 
     def distance(self, point):
         return math.sqrt((self.x-point.x)**2 + (self.y-point.y)**2)
+    
+    def angularDistance(self, point):
+        return abs(self.origoAngle() - point.origoAngle())
 
     # REFERANSERAMME
     def toReferenceFrame(self, orientation):
@@ -140,9 +143,9 @@ def unitCirclePoint(angle):
     return Point(1, 0).rotate(angle)
 
 
-def getUnitPointFromAngle(index, angles=380, correction=0):
+def getUnitPointFromAngle(index, rangesLength, correction=0):
     'Returns a (x, y) touple on the unit circle from an index in the Lidar list'
-    return unitCirclePoint(2 * math.pi * (index + 215) / angles + correction) # Den første målingen e rett bakover
+    return unitCirclePoint((2 * math.pi * index / rangesLength) + math.pi + correction) # Den første målingen e rett bakover
 
 
 def closestPointOnLine(p1, p2, p3, bounded=True):
@@ -266,6 +269,7 @@ def tryTranslations(oldPoints, newPoints):
             pointMatches.append((p, closest))
 
     if len(pointMatches) < 3:
+        print(f'GOT LOST!, {len(oldPoints)} {len(newPoints)}')
         # Om veldig få points matche, ikkje transformer shit!
         return totalTransform
 
@@ -342,3 +346,21 @@ def circularWheelDriver(point: Point):
         return max((point.x**2 + point.y**2) / (2*point.y), 0.4)
     else:
         return min((point.x**2 + point.y**2) / (2*point.y), -0.4)
+
+
+def pointIndexClosestToAngle(points, angle):
+    
+    # Anntar at punktan e sortert fra stor til liten vinkel, hvilket stemme for lidar sensoren. 
+    bestPointIndexMin, bestPointIndexMax = 0, len(points) - 1
+
+    while bestPointIndexMax - bestPointIndexMin > 1:
+        bestPointIndex = int((bestPointIndexMax + bestPointIndexMin) / 2)
+        # Merk at Lidaren gir oss punktan fra stor til lav vinkel (fra venstre mot høyre)
+        if points[bestPointIndex].origoAngle() > angle:
+            bestPointIndexMax = bestPointIndex
+        else:
+            bestPointIndexMin = bestPointIndex
+
+    return bestPointIndexMin
+    
+    # measurementPoint = points[int((bestPointIndexMax + bestPointIndexMin) / 2)].toReferenceFrame(robotPos)

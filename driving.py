@@ -1,12 +1,12 @@
 import math
 
-from geometry import angleFromPoints, lineDistance, unitCirclePoint
+from geometry import angleFromPoints, closestPoint, lineDistance, unitCirclePoint
 
 class Turn:
     def __init__(self, startPos, turnRadius, distance):
         '''
-        Positiv turnRadius e te venstre. For rett fram bruk turnRadius = math.inf
-        Positiv distance e framover. 
+        Positiv turnRadius e te venstre, negativ te høyre. For rett fram bruk turnRadius = math.inf
+        Positiv distance e framover, negativ e bakover. 
         '''
         if distance == 0:
             raise Exception('Must have nonzero distance')
@@ -66,6 +66,21 @@ class Turn:
 
         return True
 
+    # # Greier for å debug turn sin free metode. 
+    # testTurn = Turn(Orientation(0, 0, 0), 1, -0.5)
+    # pygame.draw.circle(screen, "red", testTurn.turnCenter.toScreen().xy(), 10)
+    # pygame.draw.circle(screen, "blue", testTurn.endPos.toScreen().xy(), 10)
+    # if testTurn.turnCenter:
+    #     pygame.draw.circle(screen, "red", testTurn.turnCenter.toScreen().xy(), abs(testTurn.turnRadius)*100, width=1)
+
+    # for x in range(-30, 30):
+    #     for y in range(-30, 30):
+    #         pnt = Point(x/20, y/20)
+    #         if testTurn.free([pnt]):
+    #             pygame.draw.circle(screen, "green", pnt.toScreen().xy(), 1)
+    #         else:
+    #             pygame.draw.circle(screen, "red", pnt.toScreen().xy(), 1)
+
 
 class TurnManager():
     'Håndtere konverteringen av en turn sequence til et punkt man kan følg etter.'
@@ -76,7 +91,7 @@ class TurnManager():
     def distance(self):
         return sum([abs(t.distance) for t in self.turns])
 
-    def currTurn(self, distance):
+    def currTurnIndex(self, distance):
         if not self.turns:
             return None
 
@@ -84,24 +99,29 @@ class TurnManager():
 
         turn = None
         for i, t in enumerate(self.turns):
-            turn = t
+            turnIndex, turn = i, t
             if distanceRemaining - abs(t.distance) < 0 or t == self.turns[-1]:
                 break
             distanceRemaining -= abs(t.distance)
-        return turn
+        return turnIndex, turn
 
-    def partway(self, distance, ahead=0.3, clamp=True):
+    def guidePoint(self, distance, ahead=0.3):
         'Call partway for den turnen som e på den distancen'
-        turn = self.currTurn(distance)
+        turnIndex, turn = self.currTurnIndex(distance)
+        nextTurn = self.turns[turnIndex+1] if turnIndex != None and turnIndex+1 < len(self.turns) else None
+        if nextTurn and math.copysign(1, turn.distance) == math.copysign(1, nextTurn.distance):
+            # Dersom dem kjøre samme vei, få punktet te å følg den neste svingen
+            return nextTurn.partway(distance - sum([abs(t.distance) for t in self.turns[0:self.turns.index(turn)]]) + ahead - abs(turn.distance), clamp=False)
         if turn:
-            return turn.partway(distance - sum([abs(t.distance) for t in self.turns[0:self.turns.index(turn)]]) + ahead, clamp=clamp)
+            # Ellers, beveg punktet videre bortover. 
+            return turn.partway(distance - sum([abs(t.distance) for t in self.turns[0:self.turns.index(turn)]]) + ahead, clamp=False)
 
 
 def rateTurns(goalPos, turns):
     return sum([abs(t.distance) for t in turns]) + goalPos.distance(turns[-1].endPos)
 
 
-def AStar(startPos, goalPos, obstacles, stepLength=0.3, stepAngles=5):
+def AStar(startPos, goalPos, obstacles, stepLength=0.3, stepAngles=5, minTurnRadius=0.45):
     '''
     Returne en liste av påfølgende Turns, som kan utføres for å nå en posisjon med A*, uten driftkorrigering. 
     Om vi replanne ofte nok burda det ikkje bli et problem. 
@@ -110,8 +130,9 @@ def AStar(startPos, goalPos, obstacles, stepLength=0.3, stepAngles=5):
     turnRadiusAndStep = []
     for i in range(-(stepAngles//2), stepAngles//2+1):
         # Konverter fra i=-n...n til turning radius slik at vi får en lineær endring i turning speed
-        turnRadiusAndStep.append((stepAngles//2 * 0.4 / i if i != 0 else math.inf, stepLength))
-        turnRadiusAndStep.append((stepAngles//2 * 0.4 / i if i != 0 else math.inf, -stepLength))
+        # Vi bruke en større minTurnRadius slik at det skal vær mulig for roboten å korriger på skarpe svinga
+        turnRadiusAndStep.append((stepAngles//2 * minTurnRadius / i if i != 0 else math.inf, stepLength))
+        turnRadiusAndStep.append((stepAngles//2 * minTurnRadius / i if i != 0 else math.inf, -stepLength))
 
     turnSequences = []
     turnSequencesRating = []
@@ -130,7 +151,8 @@ def AStar(startPos, goalPos, obstacles, stepLength=0.3, stepAngles=5):
             else:
                 turn = Turn(startPos, turnRadius, step)
 
-            if not turn.free(obstacles):
+            if not turn.free(obstacles, margin=0.25):
+                # Om denne svingen kjøre for nær/inni veggen, skip den. 
                 continue
 
             turnSeq = turnSequence + [turn]
@@ -144,12 +166,10 @@ def AStar(startPos, goalPos, obstacles, stepLength=0.3, stepAngles=5):
                     turnSequencesRating.append(rateTurns(goalPos, turnSeq))
                     break
 
-                if turnSequencesRating[seqIndex] < turnRating:
-                    continue
-
-                turnSequences.insert(seqIndex, turnSeq)
-                turnSequencesRating.insert(seqIndex, rateTurns(goalPos, turnSeq))
-                break
+                if turnSequencesRating[seqIndex] > turnRating:
+                    turnSequences.insert(seqIndex, turnSeq)
+                    turnSequencesRating.insert(seqIndex, rateTurns(goalPos, turnSeq))
+                    break
 
         if goalPos.distance(turnSequences[0][-1].endPos) < stepLength * 2/3:
             break
