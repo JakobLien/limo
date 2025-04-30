@@ -6,7 +6,6 @@ class Benchmark():
         self.times = {}
         self.current = None
         self.currentStart = None
-        self.ordering = []
 
     def stop(self):
         if not self.current:
@@ -19,8 +18,6 @@ class Benchmark():
     def start(self, name):
         if self.current:
             self.stop()
-        if name not in self.ordering:
-            self.ordering.append(name)
         self.current = name
         self.currentStart = datetime.datetime.now()
 

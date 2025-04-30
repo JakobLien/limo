@@ -1,119 +1,332 @@
 import math
+from typing import List
 import pygame
-from geometry import Orientation, Point, closestPoint, pointIndexClosestToAngle, splitAndMerge, tryTranslations
+import random
+from benchmark import Benchmark
+from geometry import ClosestGrid, Orientation, Point, closestPoint, getUnitPointFromAngle, pointIndexClosestToAngle, splitAndMerge, tryTranslations, lineDistance, linesCrossing
+
+from consts import LINE_POINTS_PER_METER, LINE_MIN_LENGTH, OBSCUREMENT_DISTANCE, POINT_MERGE_DISTANCE, POINT_LINE_MERGE_DISTANCE, POINT_MERGE_MOVEMENT, SEE_THROUGH_LINE_BONUS, SEE_THROUGH_LINE_COUNT, LINE_POINT_MAX_JUMP
+
+# TODO: Kunna også prøvd å lagt inn en mekanisme for at det skal vær en viss penalty for å endre mappet. 
+# Typ at endringer skal koste meir enn bekreftelser, så mappet bli mindre jumpy. 
+
+class LidarScan:
+    '''
+    Representere en Lidar scan, med feature extraction og linja. 
+    Er my greier å ha det slik, så slepp vi å tenk så my på hvilken data vi gir videre til hvilke funksjoner:)
+    '''
+    def __init__(self, ranges: List[int], robotPos):
+        # Når dette har kjørt har vi features og linja representert i scan objektet. 
+        benchmark = Benchmark()
+        benchmark.start('Adding points')
+        self.ranges = ranges
+        self.points, self.pointIndexes = [], []
+        for i, r in list(enumerate(ranges))[int(len(ranges)*8/36):int(len(ranges)*28/36)]:
+            if r == None or r > 4:
+                # Fjern målingen om den e 90 grader bakover eller None 
+                continue
+            p = getUnitPointFromAngle(i, len(ranges)).scale(r).add(Point(0.2, 0)).fromReferenceFrame(robotPos)
+            self.points.append(p)
+            self.pointIndexes.append(i)
+
+        benchmark.start('Split and merge')
+        self.featurePointIndexes, self.featurePoints = splitAndMerge(self.points)
+
+        benchmark.start('Line assignment')
+        # En liste av booleans som sie om punktet på denne indexen og det neste i featurePoints danne en linje eller ikkje. 
+        # Linesbool bli følgelig alltid nøyaktig en kortar enn både featurePoints og featurePointIndexes. 
+        self.linesBool = []
+        for fpIndexIndex in range(len(self.featurePointIndexes)-1):
+            p1Index, p2Index = self.featurePointIndexes[fpIndexIndex], self.featurePointIndexes[fpIndexIndex+1]
+            lineLength = self.points[p1Index].distance(self.points[p2Index])
+
+            isLine = False
+            if (p2Index - p1Index) / lineLength > LINE_POINTS_PER_METER and lineLength > LINE_MIN_LENGTH:
+                isLine = all(p1.distance(p2) < LINE_POINT_MAX_JUMP for p1, p2 in zip(self.points[p1Index:p2Index+1], self.points[p1Index+1:p2Index+1]))
+            self.linesBool.append(isLine)
+
+        benchmark.stop()
+        # print(benchmark)
+
+    # def isObscuredCorner(self, pointIndex, robotPos):
+    #     'Returne om denne har en direkte nabo som kan få den til å virk som obscured'
+    #     if pointIndex == 0 or pointIndex == len(self.points) - 1:
+    #         # Skip start og slutt, har ikkje så my å si på dem
+    #         return False
+    #     if self.pointIndexes[pointIndex-1] == self.pointIndexes[pointIndex]-1 and self.points[pointIndex-1].distance(robotPos) + OBSCUREMENT_DISTANCE > self.points[pointIndex].distance(robotPos):
+    #         return True
+    #     if self.pointIndexes[pointIndex+1] == self.pointIndexes[pointIndex]+1 and self.points[pointIndex+1].distance(robotPos) + OBSCUREMENT_DISTANCE > self.points[pointIndex].distance(robotPos):
+    #         return True
+
+    def correct(self, offset):
+        'Korrigere referanseramma te pointsa'
+        self.points = [p.toReferenceFrame(offset) for p in self.points]
+        self.featurePoints = [self.points[i] for i in self.featurePointIndexes]
 
 
-class LocalizationMap:
+class GlobalMap:
     'Et kart for features, for localization'
     def __init__(self):
         self.points = []
-        self.pointsConfidence = []
+        self.lines = []
+        self.robotPos = Orientation(0.0, 0.0, 0.0) # x, y og vinkel der x e fram, og radian vinkel (positiv venstre)
 
-    def addPointsAndLocalize(self, robotPos, points, localize=True):
-        'Returne en ny robotPos etter å ha justert med alle punktan.'
+    def addPoint(self, p: Point):
+        '''
+        Legg til et punkt i mappet, og merge med eksisterende punkt om dem e nærme nok, returne indexen av punktet.
+        Dette e litt meir komplisert enn man sku tru, i stor grad fordi når man har slått sammen en måling inn i kartet,
+        så flytte den punktet på kartet, kanskje inn i radiusen til et anna punkt på kartet. 
+        '''
+        pointIndex, point = closestPoint(p, self.points, different=False)
+        if point == None or p.distance(point) >= POINT_MERGE_DISTANCE:
+            self.points.append(p)
+            return len(self.points) - 1
 
-        # Skriv om så vi heller har en confidence på punktan våre, enda en liste altså
-        # Heller enn å ha data på hvert eneste punkt, for det komplisert koden en god del føle e. 
+        # Flytt mot målingen. 
+        self.points[pointIndex] = point = point.toward(p, POINT_MERGE_MOVEMENT)
 
-        featurePoints = splitAndMerge(points)
+        while True:
+            # Så flytt mot nærmste punkt på kartet om det kjem innen rekkevidde. 
+            mapPointIndex, mapPoint = closestPoint(point, self.points)
+            if mapPoint == None or point.distance(mapPoint) >= POINT_MERGE_DISTANCE:
+                break
+            self.points[pointIndex] = point = point.toward(mapPoint, POINT_MERGE_MOVEMENT)
+            self.transferLines(mapPointIndex, pointIndex, deleteLine=True)
+            # self.validateData()
+            self.removePoint(mapPointIndex)
 
-        # Korriger posisjon dersom vi e i bevegelse. 
-        offset = Orientation(0.0, 0.0, 0.0)
-        if localize:
-            offset = tryTranslations(self.points, featurePoints)
+        return pointIndex
 
-            # # TODO: Jobb meir med å juster odometri dataen, det virke skikkelig nyttig å kunna gjør, og e trur det skal vær mulig å gjør!
-            # offsetInRobotFrame = [*Point(offset).toReferenceFrame(Orientation(0, 0, robotPos.angle)).xy(), offset[2]]
-            # offsetSum = [t1+t2 for t1, t2 in zip(offsetSum, offsetInRobotFrame)]
-            # # Juster odometridataen basert på dette
-            # pygame.draw.circle(screen, "green", Point(offsetInRobotFrame).scale(100).toScreen().xy(), 10)
-            # # # Om du korrigere deg framover, øk den den
-            # # odomModifierX += Point(offset[:2]).toReferenceFrame(Orientation(0, 0, robotPos.angle)).x / 2
-            # # # Om du svinge venstre og korrigere til venstre, øk den
-            # # odomModifierZ += cmd_vel.angular.z * offset[2] / 2
+    def removePoint(self, pointIndex: int):
+        'Fjerne et punkt, ved å erstatt det med None slik at indeksan i lines forblir rett.'
+        for line in self.lines:
+            if pointIndex in line:
+                raise Exception('Can\'t remove point with line!')
 
-            robotPos = robotPos.toReferenceFrame(offset)
+        self.points[pointIndex] = None
 
-        # Vedlikehold kartet
-        hitIndexes = []
-        featurePoints = [p.toReferenceFrame(offset) for p in featurePoints]
-        for i, featurePoint in enumerate(featurePoints):
-            closest = closestPoint(featurePoint, self.points)
-            if closest and featurePoint.distance(closest) < 0.1:
-                # Eksisterende pukt
-                closestIndex = self.points.index(closest)
-                self.points[closestIndex] = closest.toward(featurePoint, 0.2)
-                self.pointsConfidence[closestIndex] = max(self.pointsConfidence[closestIndex] - 1, 0)
-                hitIndexes.append(closestIndex)
-            else:
-                # Nytt punkt
-                # # TODO: Bare lag et nytt punkt dersom nabomåligen ikkje er rett atmed vinkelmessig, for å unngå
-                # # "hjørnepunkt" som bare er en konsekvens av obscurement
-                # prevPoint = featurePoints[i-1] if i-1 > 0 else None
-                # nextPoint = featurePoints[i+1] if i+1 < len(featurePoints) else None
+    def transferLines(self, p1Index: int, p2Index: int, deleteLine=False):
+        'Flytte alle linja fra p2 til p1'
+        if p1Index == p2Index:
+            raise Exception(f'Can\'t transfer lines between the same index: {p1Index} {p2Index}')
 
-                # # Omskriv logikken: Hvis vi ikkje har nabo punktet e det lov, men hvis vi har det og det e langt foran,
-                # # da ska vi ikkje legg inn som nytt punkt. 
+        if not deleteLine:
+            if (p1Index, p2Index) in self.lines:
+                raise Exception('This merge would create lines between the same point.')
+        elif (min(p1Index, p2Index), max(p1Index, p2Index)) in self.lines:
+            self.removeLine(self.lines.index((min(p1Index, p2Index), max(p1Index, p2Index))))
 
-                # if prevPoint.distance(Point(0, 0)) < 0.2 and nextPoint.distance(Point(0, 0)) < 0.2 and \
-                #     featurePoint.angluarDistance(prevPoint) < 5 * math.pi / 180 and \
-                #     featurePoint.angluarDistance(nextPoint) < 5 * math.pi / 180:
-
-                self.points.append(featurePoint)
-                self.pointsConfidence.append(7) # Denne tallverdien avgjør hvor frampå vi skal vær med å registrer hjørnepunkt
-
-        pointsInRobotFrame = [p.toReferenceFrame(robotPos) for p in points]
-
-        # For resten av punktan
-        deleteIndexes = []
-        for i, p in enumerate(self.points):
-            if i in hitIndexes:
+        for i, (p1, p2) in enumerate(self.lines):
+            if p1Index == p1:
+                if (min(p2, p2Index), max(p2, p2Index)) in self.lines:
+                    self.removeLine(i)
+                else:
+                    self.lines[i] = (min(p2, p2Index), max(p2, p2Index))
+                continue
+            if p1Index == p2:
+                if (min(p1, p2Index), max(p1, p2Index)) in self.lines:
+                    self.removeLine(i)
+                else:
+                    self.lines[i] = (min(p1, p2Index), max(p1, p2Index))
                 continue
 
-            # En potensiell miss, spørs på obscurement
-            pInRobotFrame = p.toReferenceFrame(robotPos)
-            pInRobotFrameAngle = pInRobotFrame.origoAngle()
+    def addLine(self, p1Index: int, p2Index: int):
+        'Legg til linja om den ikkje allerede finnes og returne indexen.'
+        p1Index, p2Index = min(p1Index, p2Index), max(p1Index, p2Index)
+        if p1Index > len(self.points) or p2Index > len(self.points):
+            raise Exception('Can\'t have line without point')
+        if p1Index == p2Index:
+            raise Exception('Line must have different indexes')
+        if p1Index == None or p2Index == None:
+            raise Exception('Can\'t add line with None point indexes')
 
-            # # Binærsøk fram til rett måling
+        if (p1Index, p2Index) in self.lines:
+            return self.lines.index((p1Index, p2Index))
 
-            measurementPoint = pointsInRobotFrame[pointIndexClosestToAngle(pointsInRobotFrame, pInRobotFrameAngle)]
+        self.lines.append((p1Index, p2Index))
+        return len(self.lines) - 1
 
-            # bestPointIndexMin, bestPointIndexMax = 0, len(points) - 1
-            # while bestPointIndexMax - bestPointIndexMin > 1:
-            #     bestPointIndex = int((bestPointIndexMax + bestPointIndexMin) / 2)
-            #     # Merk at Lidaren gir oss punktan fra stor til lav vinkel (venstre mot høyre)
-            #     if points[bestPointIndex].toReferenceFrame(robotPos).origoAngle() > pInRobotFrameAngle:
-            #         bestPointIndexMax = bestPointIndex
-            #     else:
-            #         bestPointIndexMin = bestPointIndex
-            # measurementPoint = points[int((bestPointIndexMax + bestPointIndexMin) / 2)].toReferenceFrame(robotPos)
+    def removeLine(self, lineIndex: int):
+        self.lines[lineIndex] = (None, None)
 
-            if abs(measurementPoint.origoAngle() - pInRobotFrame.origoAngle()) < 5 * math.pi / 180 and \
-                measurementPoint.distance(Point(0, 0)) + 0.1 > pInRobotFrame.distance(Point(0, 0)):
-                # Om næmreste målingens vinkel e 5 grader unna, og punktet e foran målingen
-                self.pointsConfidence[i] = self.pointsConfidence[i] + 2
-            elif self.pointsConfidence[i] > 5:
-                # Punktet e ikkje synlig herifra, synk sikkerheten dersom vi e usikker på punktet
-                self.pointsConfidence[i] = self.pointsConfidence[i] + 1
+    def correctIndexes(self):
+        '''
+        For å støtt iterering mens vi endre antall underveis erstatte vi heller element vi fjerne med None (og linjer med (None, None)). 
+        For å unngå at listan øke uten ende korrigere vi her for det og fjerne det. 
+        '''
+        # En mapping fra nåværende indexer til nye indexer
+        indexMapping = []
+        for p in self.points:
+            if p != None:
+                indexMapping.append((indexMapping[-1] if indexMapping else -1)+1)
+                continue
+            indexMapping.append((indexMapping[-1] if indexMapping else -1))
 
-            if self.pointsConfidence[i] >= 10:
-                # Må ta høyde for at lista bli kortar når vi slette ting, lettast å gjør det her:)
-                deleteIndexes.append(i - len(deleteIndexes))
+        self.points = [p for p in self.points if p != None]
+        self.lines = [(indexMapping[p1], indexMapping[p2]) for (p1, p2) in self.lines if p1 != None]
 
-        for i in deleteIndexes:
-            self.points.pop(i)
-            self.pointsConfidence.pop(i)
+        # self.validateData(allowNonePoint=False, allowNoneLine=False)
+    
+    def validateData(self, allowNonePoint=True, allowNoneLine=True):
+        'Debugging verktøy som validere at alle linjer og punkt er gyldige'
+        if not allowNonePoint and None in self.points:
+            raise Exception('NonePoint after removal')
+        for pi1, pi2 in self.lines:
+            if not allowNoneLine and (not self.points[pi1] or not self.points[pi2]):
+                raise Exception('None')
+            if pi1 == None:
+                continue
+            if pi1 == pi2:
+                raise Exception('Line between same point')
+            if pi1 > pi2:
+                raise Exception('Invalid line ordering')
+            if pi1 >= len(self.points) or pi2 >= len(self.points):
+                raise Exception('Invalid point index')
+        for li, l1 in enumerate(self.lines):
+            if l1[0] == None:
+                continue
+            for l2 in self.lines[li+1:]:
+                if l1 == l2:
+                    raise Exception('Duplicate lines')
+        for pi, p1 in enumerate(self.points):
+            if p1 == None:
+                continue
+            for p2 in self.points[pi+1:]:
+                if p1 == p2:
+                    raise Exception('Duplicate points')
 
-        return robotPos
+    def addLinesAndLocalize(self, scan: LidarScan, localize=False, localizeBy=None, benchmark=None):
+        # Korriger posisjon dersom vi e i bevegelse. 
+        if len(scan.points) <= 3:
+            return
 
-    def draw(self, robotPos, screen):
-        for i, point in enumerate(self.points):
-            # Heller enn å tegn indexes kan vi tegn dem med mørkhet basert på sikkerheten vår i punktan. 
-            # Virk bedre det syns e:)
+        if not benchmark:
+            benchmark = Benchmark()
 
-            pygame.draw.circle(screen, pygame.Color(*[int(self.pointsConfidence[i] * 25.5) for _ in range(3)]), point.toReferenceFrame(robotPos).toScreen().xy(), 4)
+        benchmark.start('Localize')
+        offset = Orientation(0.0, 0.0, 0.0)
+        if localize:
+            # TODO: Er vel litt sløsing å bruk all denne tida på å generer linja, for så å bare fortsett å bruk
+            # hjørnan til lokalisering? Test ut å bruk features og en par punkt for lokalisering
+            offset = tryTranslations(localizeBy or self.points, scan.featurePoints)
+            self.robotPos = self.robotPos.toReferenceFrame(offset)
 
+            # Korriger punktan i scannen. 
+            scan.correct(offset)
 
-# class NavigationMap:
-#     'Et map som har fleir rekka med punkt, som altså markere hjørnan av veggan'
-#     pass
+        # self.validateData()
+
+        benchmark.start('Adding points')
+        # Legg te alle punkt og linjer
+        for i, (p1, p2) in enumerate(zip(scan.featurePoints, scan.featurePoints[1:])):
+            if not scan.linesBool[i] or p1.distance(p2) < POINT_MERGE_DISTANCE:
+                # ikkje en linje, skip
+                continue
+
+            p1Index = self.addPoint(p1)
+            p2Index = self.addPoint(p2)
+
+            if p1Index == p2Index or self.points[p1Index] == None:
+                # Om det bli samme punkt pga nærhet, skip
+                continue
+
+            # TODO: Her kan vi bruk logikk om at punktet har blitt slått sammen med et punkt som
+            # alt er et hjørne, for å kanskje hiv andre punktet direkte på den linja eller omvendt?
+            # Har sikkert ikkje så my å si. 
+
+            # Legg te linja te mappet. 
+            self.addLine(p1Index, p2Index)
+
+        # self.validateData()
+
+        benchmark.start('Building grid')
+        grid = ClosestGrid(self.points) # Points kjem ikkje te å flytt seg meir denne iterasjonen:)
+
+        # self.validateData()
+        
+        benchmark.start('Merge points into lines')
+        # Gammel treigar versjon
+        # Istedet for dette eller det under, bruk anntakelsan vi har. Om vi notere oss hvilke lidar indexes som e merga med hvilke 
+        # punkt i mappet, så kan vi bruk den anntakelsen. MEN, dette funke bare om vi måle enden av linja hver gong, hvilket ikke e tilfelle. 
+        # Vi kunna tatt alle linje endan og sagt "evt punkt som lande på linja må vær mellom disse indeksan" vel?
+        # Kanskje det faktisk e best å bare effektiviser nærmeste punkt oppslaget?
+        # Vi kan lett bygg den hver iterasjon for å forenkle implementasjonen i første omgang. Da slepp vi å blande oss med det. 
+
+        # For å unngå evig loop, vedlikehold en liste av linjan vi fjerna så dem ikkje bli lagt te igjen
+        removedLines = []
+        for lineIndex, line in enumerate(self.lines):
+            if line[0] == None:
+                continue
+
+            p1, p2 = self.points[line[0]], self.points[line[1]]
+            lineCenter = Point((p1.x+p2.x)/2, (p1.y+p2.y)/2)
+            checkMargin = lineCenter.distance(p1) + POINT_LINE_MERGE_DISTANCE
+            pointsWithinDistance = grid.within(lineCenter, checkMargin)
+
+            # Å kunna skaff alle punkt innen en gitt radius raskt gjor denne metoden myy raskar. 
+            for pointIndex, point in pointsWithinDistance:
+                if pointIndex in line or not self.points[pointIndex]:
+                    # Om det e denne linja, eller et punkt som e fjerna, skip
+                    continue
+
+                if lineDistance(p1, p2, point) < POINT_LINE_MERGE_DISTANCE:
+                    removedLines.append(self.lines[lineIndex])
+                    if (min(line[0], pointIndex), max(line[0], pointIndex)) in removedLines or (min(pointIndex, line[1]), max(pointIndex, line[1])) in removedLines:
+                        # Om vi skal te å legg te en linje som vi fjerna tidligar, don't. 
+                        continue
+
+                    self.removeLine(lineIndex)
+                    self.addLine(line[0], pointIndex)
+                    self.addLine(pointIndex, line[1])
+                    break # Når sammenslåing har skjedd finnes ikkje denne linja lenger, så vi må gå til neste
+
+        # self.validateData()
+        
+        benchmark.start('Remove see through lines')
+        for measurementPoint in [random.choice(scan.points) for _ in range(SEE_THROUGH_LINE_COUNT)]:
+            for lineIndex, pointLineIndexes in enumerate(self.lines):
+                if pointLineIndexes[0] != None and linesCrossing(self.robotPos, measurementPoint.toward(self.robotPos, 0, meters=SEE_THROUGH_LINE_BONUS), *[self.points[i] for i in pointLineIndexes]):
+                    self.removeLine(lineIndex)
+                    break
+
+        # self.validateData()
+        
+        benchmark.start('Remove points from lines')
+        for pointIndex, point in enumerate(self.points):
+            connectedLines = [(i, l) for i, l in enumerate(self.lines) if pointIndex in l]
+            connectedPointIndexes = [p for (_, l) in connectedLines for p in l if p != pointIndex]
+
+            if len(connectedPointIndexes) != 2:
+                if len(connectedPointIndexes) == 0:
+                    self.removePoint(pointIndex)
+                continue
+
+            if lineDistance(self.points[connectedPointIndexes[0]], self.points[connectedPointIndexes[1]], point) < POINT_LINE_MERGE_DISTANCE:
+                self.removeLine(connectedLines[0][0])
+                self.removeLine(connectedLines[1][0])
+                self.addLine(connectedPointIndexes[0], connectedPointIndexes[1])
+                self.removePoint(pointIndex)
+
+        # self.validateData()
+        
+        benchmark.start('Remove short lines')
+        for lineIndex, line in enumerate(self.lines):
+            if line[0] == None:
+                continue
+            if self.points[line[0]].distance(self.points[line[1]]) < LINE_MIN_LENGTH:
+                self.removeLine(lineIndex)
+
+        # self.validateData()
+        
+        benchmark.start('Correct indexes')
+        self.correctIndexes()
+
+        # benchmark.stop()
+        # print(benchmark)
+
+    def draw(self, screen):
+        for p in self.points:
+            pygame.draw.circle(screen, 'red', p.toReferenceFrame(self.robotPos).toScreen().xy(), 2)
+
+        for i1, i2 in self.lines:
+            pygame.draw.line(screen, "black", self.points[i1].toReferenceFrame(self.robotPos).toScreen().xy(), self.points[i2].toReferenceFrame(self.robotPos).toScreen().xy(), 2)

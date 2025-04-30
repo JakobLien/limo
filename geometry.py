@@ -1,9 +1,11 @@
 import math
 import random
 
+from benchmark import Benchmark
+from consts import GRID_SLOTS_PER_METER, LOCALIZATION_POINT_MATCH_DISTANCE, MAP_SCALE, SPLIT_DISTANCE, SCREEN_SIZE
 
 class Point:
-    def __init__(self, x, y=None, data=None):
+    def __init__(self, x, y=None):
         if y == None:
             point = x
             self.x = point[0]
@@ -11,7 +13,6 @@ class Point:
         else:
             self.x = x
             self.y = y
-        self.data = {}
 
     def __str__(self):
         return f'Point({self.x}, {self.y})'
@@ -23,15 +24,9 @@ class Point:
 
     def xy(self):
         return self.x, self.y
-    
+
     def orientation(self, angle=0.0):
         return Orientation(self.x, self.y, angle=angle)
-
-    def setData(self, key, value):
-        p = Point(self.x, self.y)
-        p.data = self.data.copy()
-        p.data[key] = value
-        return p
 
     def rotate(self, angle):
         x_new = self.x * math.cos(angle) - self.y * math.sin(angle)
@@ -51,8 +46,13 @@ class Point:
     def scale(self, scale):
         return Point(self.x * scale, self.y * scale)
 
-    def toward(self, point, percent=0.5):
-        'Returne et nytt punkt mellom dette og et anna punkt, med prosentandel for å si kor'
+    def toward(self, point, percent=0.5, meters=0):
+        '''
+        Returne et nytt punkt mellom dette og et anna punkt, med prosentandel for å si kor. 
+        Kan evt også flytt n meter i retning et anna punkt. 
+        '''
+        if meters:
+            return self.add(point.add(-self).scale(percent)).add(unitCirclePoint(point.add(-self).origoAngle()).scale(meters))
         return self.add(point.add(-self).scale(percent))
 
     def __neg__(self):
@@ -82,7 +82,7 @@ class Point:
 
 class Orientation(Point):
     'Punkt og retning'
-    def __init__(self, x, y=None, angle=0.0, data=None):
+    def __init__(self, x, y=None, angle=0.0):
         if y == None:
             orientation = x
             self.x = orientation[0]
@@ -92,7 +92,6 @@ class Orientation(Point):
             self.x = x
             self.y = y
             self.angle = angle
-        self.data = data
     
     def __str__(self):
         return f'Orientation({self.x}, {self.y}, {self.angle})'
@@ -137,6 +136,10 @@ class Line:
     
     def lineDistance(self, p1, p2, p3, bounded=True):
         return lineDistance(p1, p2, p3, bounded=bounded)
+    
+    @property
+    def points(self):
+        return [self.p1, self.p2]
 
 
 def unitCirclePoint(angle):
@@ -145,7 +148,7 @@ def unitCirclePoint(angle):
 
 def getUnitPointFromAngle(index, rangesLength, correction=0):
     'Returns a (x, y) touple on the unit circle from an index in the Lidar list'
-    return unitCirclePoint((2 * math.pi * index / rangesLength) + math.pi + correction) # Den første målingen e rett bakover
+    return unitCirclePoint((2 * math.pi * index / rangesLength) - math.pi + correction) # Den første målingen e rett bakover
 
 
 def closestPointOnLine(p1, p2, p3, bounded=True):
@@ -158,21 +161,13 @@ def closestPointOnLine(p1, p2, p3, bounded=True):
     return Point(p1.x + t * (p2.x - p1.x), p1.y + t * (p2.y - p1.y))
 
 
-def lineDistance(p1, p2, p3, bounded=True):
+def lineDistance(p1, p2, p3, bounded=True, checkEqual=True):
     'Avstanden fra p3 til linja mellom p1 og p2'
-    if bounded:
-        # Vi kjøre pytagoras for å sjekk om det e nærmast linja eller endepunktan. 
-        # For p1 som hjørne
-        if p1.distance(p2)**2 + p1.distance(p3)**2 < p2.distance(p3)**2:
-            return p1.distance(p3)
-
-        # For p2 som hjørne
-        if p2.distance(p1)**2 + p2.distance(p3)**2 < p1.distance(p3)**2:
-            return p2.distance(p3)
-
-    if p1.distance(p2) == 0:
+    if checkEqual and p1 == p2:
         # Om linjepunktan e samme sted, return avstanden direkte. 
         return p1.distance(p3)
+    if bounded:
+        return closestPointOnLine(p1, p2, p3, bounded=True).distance(p3)
     return abs((p2.y - p1.y) * p3.x - (p2.x - p1.x) * p3.y + p2.x * p1.y - p2.y * p1.x) \
         / p1.distance(p2)
 
@@ -187,74 +182,188 @@ def angleFromPoints(p1, p2, p3):
 def toScreen(x, y):
     'Konvertere fra robotens referanseramme der x e framover, til skjermen der negativ y e framover, der vi også sentrere på bilen'
     # TODO: Skriv om til å bruk toReferenceFrame
-    return 300 - y * 100, 300 - x * 100
+    return SCREEN_SIZE/2 - y * MAP_SCALE, SCREEN_SIZE/2 - x * MAP_SCALE
 
 
 def fromScreen(x, y):
     # TODO: Skriv om til å bruk toReferenceFrame
-    return (-y + 300) / 100, (-x + 300) / 100
+    return (-y + SCREEN_SIZE/2) / MAP_SCALE, (-x + SCREEN_SIZE/2) / MAP_SCALE
 
 
-def splitAndMerge(points, distanceParameter=0.1, minPoints=3):
+# Her prøvd e meg på å implementer en raskar versjon av split and merge, men det va vanskelig. 
+# Dette e et forsøk på å bruk distansen mellom nærliggende punkt, men det ble ikkje nyttig. 
+# def featuresByAngle(points):
+#     pointIndexes = [(i, p) for (i, p) in enumerate(points)]
+#     deg1, deg2, deg3, deg4 = [False, False], [False, False], [False, False], [False, False]
+#     for i in range(2, len(pointIndexes)-2):
+#         # pm2, pm1, p, p1, p2 = pointIndexes[i-2][1], pointIndexes[i-1][1], pointIndexes[i][1], pointIndexes[i+1][1], pointIndexes[i+2][1]
+#         deg1.append(abs(abs(pointIndexes[i-1][1].add(-pointIndexes[i][1]).origoAngle()) + abs(pointIndexes[i+1][1].add(-pointIndexes[i][1]).origoAngle()) - math.pi) > math.pi / 4)
+#         deg2.append(abs(abs(pointIndexes[i-2][1].add(-pointIndexes[i][1]).origoAngle()) + abs(pointIndexes[i+2][1].add(-pointIndexes[i][1]).origoAngle()) - math.pi) > math.pi / 2)
+#         deg3.append(points[i].scale(-2).add(points[i-1]).add(points[i+1]).distance(Point(0, 0)) / 2 / points[i-1].distance(points[i+1]) > 0.45)
+#         deg4.append(points[i].scale(-2).add(points[i-2]).add(points[i+2]).distance(Point(0, 0)) / 2 / points[i-2].distance(points[i+2]) > 0.5)
+#         # if None not in points[i-1:i+1] and points[i].scale(2).add(-points[i-1]).add(-points[i+1]).distance(Point(0, 0)) < 0.05:
+#         #     deg3.append(None)
+#     deg1.extend([False, False])
+#     deg2.extend([False, False])
+#     deg3.extend([False, False])
+#     deg4.extend([False, False])
+#     print(len([b for b in deg1 if b]), len([b for b in deg2 if b]), len([b for b in deg3 if b]), len([b for b in deg4 if b]))
+#     # # splitForDistance = pointIndexes[i-1][1].distance(pointIndexes[i+1][1]) > 0.3 # En 30 cm jump telles som en feature.
+#     # if splitForDegree or splitForDegree2:# or (iteration==0 and splitForDistance): # 20 grader
+#     #     newPointIndexes.append(pointIndexes[i])
+#     pointIndexes = [(i, p) for (i, p) in pointIndexes if deg4[i]]
+#     return [i for (i, p) in pointIndexes], [p for (i, p) in pointIndexes]
+
+
+def splitAndMerge(points, distanceParameter=None):
     '''
     Kjøre split and merge med grunnleggende distanceParameter. Funke, men ikkje forferdelig effektivt.
     Vi burda ha prøvd oss på en meir tilpassningdyktig distanseberegning, typ om mange punkt på rad e langt unna linja,
     ska det ha meir å si enn om bare ett punkt e det. 
     '''
+    if len(points) < 3:
+        return [], []
+
+    benchmark = Benchmark()
+
+    if distanceParameter == None:
+        distanceParameter = SPLIT_DISTANCE
+
+    points = list(points)
+
     # Indeksan te punktan
-    indexes = [0, len(points)-1]
+    splitIndexes = [0, len(points)-1]
+
+    benchmark.start('Split')
 
     # Split
     # Ish det e vil gjør: Ta linja fra, finn det største avviket, legg inn det i indexes. 
     # Etter hver split, repeter for hver halvdel inntil vi har splitta det greit. 
-    indexesLen = 0
-    while indexesLen != len(indexes):
-        indexesLen = len(indexes)
-        for indexIndex in range(len(indexes)-1):
-            # Gå over mellom alle indeksan (altså fra punkt til punkt)
+    while True:
+        newSplitIndexes = []
+        for startPointIndex, endPointIndex in zip(splitIndexes, splitIndexes[1:]):
+            # For alle påfølgende par med indeksa i punktan
             maxDistIndex, maxDist = 0, 0
-            # For hvert punkt mellom dem 2 punktan
-            for i in range(indexes[indexIndex]+1, indexes[indexIndex+1]):
-                startLinePoint = points[indexes[indexIndex]]
-                endLinePoint = points[indexes[indexIndex+1]]
-                currPoint = points[i]
+            p1, p2 = points[startPointIndex], points[endPointIndex]
+            # Regn ut linje parametran på utsida for å gjør det raskar
+            p1p2Dist = p1.distance(p2)
+            xDiff = p2.x - p1.x
+            yDiff = p2.y - p1.y
+            x2y1Minusy2x1 = p2.x * p1.y - p2.y * p1.x
+            for pointIndex in range(startPointIndex+1, endPointIndex):
+                # For hvert punkt mellom dem 2 punktan
 
-                dist = lineDistance(startLinePoint, endLinePoint, currPoint)
+                # Inlined utregning for å gjør det raskar.
+                dist = abs(yDiff * points[pointIndex].x - xDiff * points[pointIndex].y + x2y1Minusy2x1) / p1p2Dist
                 if dist > maxDist:
-                    maxDistIndex, maxDist = i, dist
+                    maxDistIndex, maxDist = pointIndex, dist
 
             # Om det e over en threshold dele vi. 
             if maxDist > distanceParameter:
-                indexes.insert(indexIndex+1, maxDistIndex)
+                newSplitIndexes.append(maxDistIndex)
+
+        if not newSplitIndexes:
+            break
+        splitIndexes.extend(newSplitIndexes)
+        splitIndexes.sort()
+
+    benchmark.start('Merge')
 
     # Merge
     # My det samme, bare at vi sjekke at hver av indeks punktan e en viss avstand fra linja mellom nabopunktan.
     # Om ikkje fjerne vi det punktet. 
     # TODO: En bug med dette e at rekkefølgen har noko å si, vi burda istedet begyn med dem mest avvikende. 
     i = 0
-    while i < len(indexes)-3:
-        if lineDistance(points[indexes[i]], points[indexes[i+2]], points[indexes[i+1]]) < distanceParameter:
-            indexes.pop(i)
+    while i < len(splitIndexes)-3:
+        if lineDistance(points[splitIndexes[i]], points[splitIndexes[i+2]], points[splitIndexes[i+1]], bounded=False) < distanceParameter:
+            splitIndexes.pop(i)
         else:
             i += 1
 
-    return [p for i, p in enumerate(points) if i in indexes]
+    benchmark.stop()
+    # print(benchmark)
+
+    return splitIndexes, [points[i] for i in splitIndexes]
 
 
-def closestPointIndex(point, points):
+def closestPoint(point, points, different=True):
+    '''
+    Skaffe det nærmeste punktet og index ved å gå gjennom alle punktan.
+    different er om vi skal tell med like punkt (med lik x og y)
+    '''
     bestDist = 100 # 100 meter altså
-    bestPointIndex = None
+    bestPointIndex, bestPoint = None, None
     for i, p in enumerate(points):
+        if p == None:
+            continue
         if point.distance(p) < bestDist:
+            if different and p == point:
+                # Unngå å gi oss dette punktet om det e i points lista. 
+                continue
             bestDist = point.distance(p)
-            bestPointIndex = i
-    return bestPointIndex
+            bestPointIndex, bestPoint = i, p
+    return bestPointIndex, bestPoint
 
 
-def closestPoint(point, points):
-    i = closestPointIndex(point, points)
-    if i:
-        return points[i]
+class ClosestGrid:
+    'Indeksere points på et grid slik at vi kan gjør oppslag på nærmeste punkt'
+    # Denne e ca 10 gong raskar enn naivt closestPoint om man tune den greit:)
+    # Er en balanse mellom å ha lite å sjekk, og å ikkje måtta sjekk for mange felt når det e langt til nærmeste punkt. 
+    def __init__(self, points, slotsPerMeter=None, *args, **kwargs):
+        if slotsPerMeter:
+            self.slotsPerMeter = slotsPerMeter # 2 slots per meter medføre 4 ruta i en kvadratmeter
+        else:
+            self.slotsPerMeter = GRID_SLOTS_PER_METER
+        self.grid = {} # dict med liste av enumerate element. 
+        for i, point in enumerate(points):
+            if point == None:
+                continue
+            key = self.getKey(point)
+            if key not in self.grid:
+                self.grid[key] = [(i, point)]
+            else:
+                self.grid[key].append((i, point))
+
+    def getKey(self, point: Point):
+        return (round(point.x*self.slotsPerMeter), round(point.y*self.slotsPerMeter))
+
+    def within(self, point: Point, distance):
+        'Returne minst alle punkt innen distance fra punktet'
+        key = self.getKey(point)
+        gridDist = distance * self.slotsPerMeter
+        xMin, yMin, xMax, yMax = key[0] - gridDist, key[1] - gridDist, key[0] + gridDist, key[1] + gridDist
+        # Her må e faktisk bare skaff keys som vi har i griddet, om ikkje bli det veldig tregt for store radiusa
+        keys = [key for key in self.grid.keys() if xMin <= key[0] <= xMax and yMin <= key[1] <= yMax]
+        return self.getGridContents(keys)
+    
+    def keyWithinGridDist(self, key, gridDist):
+        xMin, yMin, xMax, yMax = key[0] - gridDist, key[1] - gridDist, key[0] + gridDist, key[1] + gridDist
+        # Her må e faktisk bare skaff keys som vi har i griddet, om ikkje bli det veldig tregt for store radiusa
+        keys = [key for key in self.grid.keys() if xMin <= key[0] <= xMax and yMin <= key[1] <= yMax]
+        return self.getGridContents(keys)
+
+    def getGridContents(self, keys):
+        return [i for key in keys for i in self.grid.get(key, [])]
+
+    def closest(self, point: Point):
+        key = self.getKey(point)
+        closestIndex, closestPoint, closestDistance = None, None, 100
+        if len(self.grid) < 3:
+            return None, None
+        for layer in range(1, 100):
+            for i, p in self.keyWithinGridDist(key, layer**2):
+                if p == point:
+                    continue
+                if point.distance(p) < closestDistance:
+                    closestIndex, closestPoint, closestDistance = i, p, point.distance(p)
+
+            if closestDistance * self.slotsPerMeter < layer:
+                # Da e dette garantert nærmeste punkt, fordi vi no har sjekka alle punkt som kan vær innen radiusen
+                # Kunna optimalisert det meir og sjekka færre felt ved å sjå på den nærmeste "kanten", men det bli bare knot
+                break
+
+        return closestIndex, closestPoint
+
 
 def tryTranslations(oldPoints, newPoints):
     'Prøv deg fram til transformasjoner som gjør at points stemme bedre'
@@ -262,10 +371,10 @@ def tryTranslations(oldPoints, newPoints):
     totalTransform = Orientation(0.0, 0.0, 0.0)
     pointMatches = []
     for p in newPoints:
-        closest = closestPoint(p, oldPoints)
+        _, closest = closestPoint(p, oldPoints)
         if not closest:
             continue
-        elif p.distance(closest) < 0.1:
+        elif p.distance(closest) < LOCALIZATION_POINT_MATCH_DISTANCE:
             pointMatches.append((p, closest))
 
     if len(pointMatches) < 3:
@@ -297,7 +406,7 @@ def tryTranslations(oldPoints, newPoints):
         if newDist < dist:
             dist = newDist
             totalTransform = newTotalTransform
-    
+
     # print(totalTransform, 'improved distance by', round(math.sqrt(initialDist)/len(pointMatches) - math.sqrt(dist)/len(pointMatches), 5))
     return totalTransform
 
@@ -349,7 +458,6 @@ def circularWheelDriver(point: Point):
 
 
 def pointIndexClosestToAngle(points, angle):
-    
     # Anntar at punktan e sortert fra stor til liten vinkel, hvilket stemme for lidar sensoren. 
     bestPointIndexMin, bestPointIndexMax = 0, len(points) - 1
 
@@ -364,3 +472,15 @@ def pointIndexClosestToAngle(points, angle):
     return bestPointIndexMin
     
     # measurementPoint = points[int((bestPointIndexMax + bestPointIndexMin) / 2)].toReferenceFrame(robotPos)
+
+
+def ccw(p1, p2, p3):
+    return (p3.y-p1.y) * (p2.x-p1.x) > (p2.y-p1.y) * (p3.x-p1.x)
+
+
+def linesCrossing(p1, p2, p3, p4):
+    'Returne bool om linja fra p1 til p2 og linja fra p3, til p4 krysse hverandre.'
+    # Bygge på at om linjan krysse må det vær en firkant. 
+    # Håndtere ikkje colinearity, men det treng ikkje vi pr no. 
+    # Se https://stackoverflow.com/a/9997374
+    return ccw(p1,p3,p4) != ccw(p2,p3,p4) and ccw(p1,p2,p3) != ccw(p1,p2,p4)

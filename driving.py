@@ -38,7 +38,10 @@ class Turn:
             return self.startPos.rotateAround(math.copysign(distance, self.distance) / self.turnRadius , self.turnCenter)
 
     def free(self, points, margin=0.25):
-        'Om det e nån punkt i points som bilen kræsje med. Margin e kor my klaring vi ønske for bilen på hver side'
+        '''
+        Om det e nån punkt i points som bilen kræsje med. Margin e kor my klaring vi ønske for bilen på hver side. 
+        Returne en touple med en boolean om vi har åpen bane, og evt hvilket punkt vi kræsja i. 
+        '''
         # For dette trur e vi bare treng å filtrer ut dem punktan som e i retning den anndelen av sirkelen vi kjøre i, 
         # for så å sjekk at avstanden fra sentrum av sirkelen e minst margin differanse fra radius av sirkelen. 
         minRadius = abs(self.turnRadius) - margin
@@ -47,8 +50,8 @@ class Turn:
         if math.isinf(self.turnRadius):
             for point in points:
                 if lineDistance(self.startPos, self.endPos, point) < margin:
-                    return False
-            return True
+                    return (False, point)
+            return (True, None)
 
         for point in points:
             # Sjekk at avstand fra turn center stemme ish
@@ -62,9 +65,9 @@ class Turn:
                 angle = angleFromPoints(point, self.turnCenter, self.startPos)
 
             if 0 < angle < (abs(self.distance) + margin) / abs(self.turnRadius):
-                return False
+                return (False, point)
 
-        return True
+        return (True, None)
 
     # # Greier for å debug turn sin free metode. 
     # testTurn = Turn(Orientation(0, 0, 0), 1, -0.5)
@@ -137,7 +140,7 @@ def AStar(startPos, goalPos, obstacles, stepLength=0.3, stepAngles=5, minTurnRad
     turnSequences = []
     turnSequencesRating = []
 
-    for _ in range(100):
+    for _ in range(200):
         # Legg til dem 5 nye turn sekvensan, i lista, og fjern den vi jobbe fra
         if turnSequences:
             turnSequence = turnSequences.pop(0)
@@ -151,7 +154,7 @@ def AStar(startPos, goalPos, obstacles, stepLength=0.3, stepAngles=5, minTurnRad
             else:
                 turn = Turn(startPos, turnRadius, step)
 
-            if not turn.free(obstacles, margin=0.25):
+            if not turn.free(obstacles, margin=0.25)[0]:
                 # Om denne svingen kjøre for nær/inni veggen, skip den. 
                 continue
 
