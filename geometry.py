@@ -364,9 +364,10 @@ class ClosestGrid:
 
         return closestIndex, closestPoint
 
-
+lastTotalTransform = Orientation(0.0, 0.0, 0.0)
 def tryTranslations(oldPoints, newPoints):
     'Prøv deg fram til transformasjoner som gjør at points stemme bedre'
+    global lastTotalTransform
 
     totalTransform = Orientation(0.0, 0.0, 0.0)
     pointMatches = []
@@ -391,11 +392,16 @@ def tryTranslations(oldPoints, newPoints):
 
     initialDist = dist
 
-    for j in range(1, 20, 1):
-        # Velg en tilfeldig transformasjon, men med stadig mindre bound på tilfeldigheten. Går gradvis 25 cm pr loop til 0.5 cm pr loop. 
-        newTransform = Orientation((random.random() - 0.5) / 10 / j, (random.random() - 0.5) / 10 / j, (random.random() - 0.5) / 5 / j)
+    for j in range(0, 20, 1):
+        if j == 0:
+            # Begynn med å prøv den forrige transformasjonen. Koste oss veldig lite, og med constant velocity model e dette 
+            # en veldig fait anntakelse. Bli litt tilsvarende automatisk odometri justering. 
+            # Det e veldig vanskelig for meg å bevis med tall, men e e ganske overbevist om at dette hjalp veldig!
+            newTransform = lastTotalTransform
+        else:
+            # Velg en tilfeldig transformasjon, men med stadig mindre bound på tilfeldigheten. Går gradvis 25 cm pr loop til 0.5 cm pr loop. 
+            newTransform = Orientation((random.random() - 0.5) / 10 / j, (random.random() - 0.5) / 10 / j, (random.random() - 0.5) / 5 / j)
         newTotalTransform = totalTransform.add(newTransform)
-        # newTotalTransform = [t1+t2 for t1, t2 in zip(totalTransform, newTransform)]
 
         newDist = 0
         for p1, p2 in pointMatches:
@@ -408,6 +414,7 @@ def tryTranslations(oldPoints, newPoints):
             totalTransform = newTotalTransform
 
     # print(totalTransform, 'improved distance by', round(math.sqrt(initialDist)/len(pointMatches) - math.sqrt(dist)/len(pointMatches), 5))
+    lastTotalTransform = totalTransform
     return totalTransform
 
 

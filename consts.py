@@ -44,7 +44,7 @@ POINT_MERGE_DISTANCE = 0.05
 
 # Kor mang prosent mot det nye punktet punktet på kartet ska flytt seg, mellom 0 og 1. 
 # Vi velge oss en verdi under 50% her for at om den går seg vill en iterasjon skal det ikkje permanent shift heile mappet. 
-POINT_MERGE_MOVEMENT = 0.2
+POINT_MERGE_MOVEMENT = 0.05
 
 # Når et punkt skal slås inn i linja
 POINT_LINE_MERGE_DISTANCE = POINT_MERGE_DISTANCE
@@ -57,6 +57,3 @@ SEE_THROUGH_LINE_COUNT = 3
 
 # Kor langt foran må et hjørne vær for at det skal tell som obscurement
 OBSCUREMENT_DISTANCE = 0.1
-
-
-
