@@ -1,11 +1,11 @@
 import math
-from typing import List
+from typing import List, Tuple
 import pygame
 import random
 from benchmark import Benchmark
 from geometry import ClosestGrid, Orientation, Point, closestPoint, getUnitPointFromAngle, pointIndexClosestToAngle, splitAndMerge, tryTranslations, lineDistance, linesCrossing
 
-from consts import LINE_POINTS_PER_METER, LINE_MIN_LENGTH, OBSCUREMENT_DISTANCE, POINT_MERGE_DISTANCE, POINT_LINE_MERGE_DISTANCE, POINT_MERGE_MOVEMENT, SEE_THROUGH_LINE_BONUS, SEE_THROUGH_LINE_COUNT, LINE_POINT_MAX_JUMP
+from consts import LINE_POINTS_PER_METER, LINE_MIN_LENGTH, POINT_MERGE_DISTANCE, POINT_LINE_MERGE_DISTANCE, POINT_MERGE_MOVEMENT, SEE_THROUGH_LINE_BONUS, SEE_THROUGH_LINE_COUNT, LINE_POINT_MAX_JUMP
 
 # TODO: Kunna også prøvd å lagt inn en mekanisme for at det skal vær en viss penalty for å endre mappet. 
 # Typ at endringer skal koste meir enn bekreftelser, så mappet bli mindre jumpy. 
@@ -15,9 +15,8 @@ class LidarScan:
     Representere en Lidar scan, med feature extraction og linja. 
     Er my greier å ha det slik, så slepp vi å tenk så my på hvilken data vi gir videre til hvilke funksjoner:)
     '''
-    def __init__(self, ranges: List[int], robotPos):
+    def __init__(self, ranges: List[int], robotPos, benchmark: Benchmark=None):
         # Når dette har kjørt har vi features og linja representert i scan objektet. 
-        benchmark = Benchmark()
         benchmark.start('Adding points')
         self.ranges = ranges
         self.points, self.pointIndexes = [], []
@@ -45,18 +44,7 @@ class LidarScan:
                 isLine = all(p1.distance(p2) < LINE_POINT_MAX_JUMP for p1, p2 in zip(self.points[p1Index:p2Index+1], self.points[p1Index+1:p2Index+1]))
             self.linesBool.append(isLine)
 
-        benchmark.stop()
         # print(benchmark)
-
-    # def isObscuredCorner(self, pointIndex, robotPos):
-    #     'Returne om denne har en direkte nabo som kan få den til å virk som obscured'
-    #     if pointIndex == 0 or pointIndex == len(self.points) - 1:
-    #         # Skip start og slutt, har ikkje så my å si på dem
-    #         return False
-    #     if self.pointIndexes[pointIndex-1] == self.pointIndexes[pointIndex]-1 and self.points[pointIndex-1].distance(robotPos) + OBSCUREMENT_DISTANCE > self.points[pointIndex].distance(robotPos):
-    #         return True
-    #     if self.pointIndexes[pointIndex+1] == self.pointIndexes[pointIndex]+1 and self.points[pointIndex+1].distance(robotPos) + OBSCUREMENT_DISTANCE > self.points[pointIndex].distance(robotPos):
-    #         return True
 
     def correct(self, offset):
         'Korrigere referanseramma te pointsa'
@@ -67,8 +55,8 @@ class LidarScan:
 class GlobalMap:
     'Et kart for features, for localization'
     def __init__(self):
-        self.points = []
-        self.lines = []
+        self.points: List[Point] = []
+        self.lines: List[Tuple[int]] = []
         self.robotPos = Orientation(0.0, 0.0, 0.0) # x, y og vinkel der x e fram, og radian vinkel (positiv venstre)
 
     def addPoint(self, p: Point):
@@ -245,13 +233,6 @@ class GlobalMap:
         # self.validateData()
         
         benchmark.start('Merge points into lines')
-        # Gammel treigar versjon
-        # Istedet for dette eller det under, bruk anntakelsan vi har. Om vi notere oss hvilke lidar indexes som e merga med hvilke 
-        # punkt i mappet, så kan vi bruk den anntakelsen. MEN, dette funke bare om vi måle enden av linja hver gong, hvilket ikke e tilfelle. 
-        # Vi kunna tatt alle linje endan og sagt "evt punkt som lande på linja må vær mellom disse indeksan" vel?
-        # Kanskje det faktisk e best å bare effektiviser nærmeste punkt oppslaget?
-        # Vi kan lett bygg den hver iterasjon for å forenkle implementasjonen i første omgang. Da slepp vi å blande oss med det. 
-
         # For å unngå evig loop, vedlikehold en liste av linjan vi fjerna så dem ikkje bli lagt te igjen
         removedLines = []
         for lineIndex, line in enumerate(self.lines):
@@ -321,8 +302,23 @@ class GlobalMap:
         benchmark.start('Correct indexes')
         self.correctIndexes()
 
-        # benchmark.stop()
         # print(benchmark)
+
+    def getLinePoints(self, maxGap):
+        points = set()
+        for line in self.lines:
+            if line[0] == None:
+                continue
+            p1, p2 = self.points[line[0]], self.points[line[1]]
+            points.add(p1)
+            points.add(p2)
+            dist = p1.distance(p2)
+            if dist < maxGap:
+                continue
+            numPoints = math.ceil(dist / maxGap)
+            for i in range(1, numPoints+1):
+                points.add(p1.toward(p2, i/(numPoints+1)))
+        return list(points)
 
     def draw(self, screen):
         for p in self.points:

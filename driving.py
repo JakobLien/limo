@@ -1,6 +1,8 @@
 import math
+import random
+from typing import List
 
-from geometry import angleFromPoints, closestPoint, lineDistance, unitCirclePoint
+from geometry import Point, angleFromPoints, lineDistance, unitCirclePoint
 
 class Turn:
     def __init__(self, startPos, turnRadius, distance):
@@ -124,7 +126,7 @@ def rateTurns(goalPos, turns):
     return sum([abs(t.distance) for t in turns]) + goalPos.distance(turns[-1].endPos)
 
 
-def AStar(startPos, goalPos, obstacles, stepLength=0.3, stepAngles=5, minTurnRadius=0.45):
+def AStar(startPos, goalPos: Point, obstacles: List[Point], stepLength=0.3, stepAngles=5, minTurnRadius=0.45):
     '''
     Returne en liste av påfølgende Turns, som kan utføres for å nå en posisjon med A*, uten driftkorrigering. 
     Om vi replanne ofte nok burda det ikkje bli et problem. 
@@ -139,6 +141,10 @@ def AStar(startPos, goalPos, obstacles, stepLength=0.3, stepAngles=5, minTurnRad
 
     turnSequences = []
     turnSequencesRating = []
+
+    # Vi shuffle randomly for å raskar kunna kræsj i ting. Dersom mange punkt som hadd forhindra svingen lønne
+    # det seg å sjå på dem i tilfeldig rekkefølge heller enn i f.eks. scan rekkefølge. 
+    random.shuffle(obstacles)
 
     for _ in range(200):
         # Legg til dem 5 nye turn sekvensan, i lista, og fjern den vi jobbe fra

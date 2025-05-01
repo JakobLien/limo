@@ -1,7 +1,6 @@
 import math
 import random
 
-from benchmark import Benchmark
 from consts import GRID_SLOTS_PER_METER, LOCALIZATION_POINT_MATCH_DISTANCE, MAP_SCALE, SPLIT_DISTANCE, SCREEN_SIZE
 
 class Point:
@@ -21,6 +20,9 @@ class Point:
         if type(other) is not Point:
             return False
         return self.x == other.x and self.y == other.y
+    
+    def __hash__(self):
+        return hash(self.xy())
 
     def xy(self):
         return self.x, self.y
@@ -100,6 +102,9 @@ class Orientation(Point):
         if type(other) is not Orientation:
             return False
         return self.x == other.x and self.y == other.y and self.angle == other.angle
+
+    def __hash__(self):
+        return hash(self.xya())
 
     def xya(self):
         return self.x, self.y, self.angle
@@ -224,7 +229,7 @@ def splitAndMerge(points, distanceParameter=None):
     if len(points) < 3:
         return [], []
 
-    benchmark = Benchmark()
+    # benchmark = Benchmark()
 
     if distanceParameter == None:
         distanceParameter = SPLIT_DISTANCE
@@ -234,7 +239,7 @@ def splitAndMerge(points, distanceParameter=None):
     # Indeksan te punktan
     splitIndexes = [0, len(points)-1]
 
-    benchmark.start('Split')
+    # benchmark.start('Split')
 
     # Split
     # Ish det e vil gjør: Ta linja fra, finn det største avviket, legg inn det i indexes. 
@@ -267,7 +272,7 @@ def splitAndMerge(points, distanceParameter=None):
         splitIndexes.extend(newSplitIndexes)
         splitIndexes.sort()
 
-    benchmark.start('Merge')
+    # benchmark.start('Merge')
 
     # Merge
     # My det samme, bare at vi sjekke at hver av indeks punktan e en viss avstand fra linja mellom nabopunktan.
@@ -280,7 +285,6 @@ def splitAndMerge(points, distanceParameter=None):
         else:
             i += 1
 
-    benchmark.stop()
     # print(benchmark)
 
     return splitIndexes, [points[i] for i in splitIndexes]
@@ -462,6 +466,18 @@ def circularWheelDriver(point: Point):
         return max((point.x**2 + point.y**2) / (2*point.y), 0.4)
     else:
         return min((point.x**2 + point.y**2) / (2*point.y), -0.4)
+
+
+# # Debugging av wheelDrivers
+# turnRadius = circularWheelDriver(target)
+# pygame.draw.circle(screen, "red", Point(0, turnRadius).toScreen().xy(), 4)
+# pygame.draw.circle(screen, "red", Point(0, turnRadius).toScreen().xy(), abs(turnRadius)*100, width=1)
+# pygame.draw.circle(screen, "red", Point(0.2, 0).toScreen().xy(), 4)
+# # cmd_vel.linear.x = target.distance(Point(0, 0)) / 20
+# # cmd_vel.angular.z = 0.1 / turnRadius
+# # cmd_vel_pub.publish(cmd_vel)
+# pygame.draw.line(screen, "green", Point(0.2, 0).toScreen().xy(), Point(0, turnRadius).toScreen().xy(), 2)
+# pygame.draw.line(screen, "green", Point(0.2, 0).toScreen().xy(), target.toScreen().xy(), 2)
 
 
 def pointIndexClosestToAngle(points, angle):

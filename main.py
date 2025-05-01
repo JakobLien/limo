@@ -1,9 +1,9 @@
 import datetime
-import random
 import pygame
 import math
 import os
 
+from UI import Button
 from consts import ROBOT_SPEED
 from driving import AStar, TurnManager
 from map import LidarScan, GlobalMap
@@ -20,7 +20,7 @@ from geometry_msgs.msg import Twist
 pygame.init()
 screen = pygame.display.set_mode((600, 600))
 clock = pygame.time.Clock()
-running = True
+f = pygame.font.Font(size=32)
 
 ranges = []
 rangesLength = 0
@@ -70,6 +70,14 @@ turnStart = None
 # followAroundPoint = Point(1, 0)
 # followAroundIndex = rangesLength / 2
 
+clearMapButton = Button('ClearMap')
+stopButton = Button('Stop')
+returnButton = Button('Return')
+queueButton = Button('Queue')
+queueButton.queue = []
+
+buttons = [clearMapButton, stopButton, returnButton, queueButton]
+
 while True:
     # Kryss ut eller CTRL + C for å stopp programmet
     if any([e.type == pygame.QUIT for e in pygame.event.get()]) or rospy.is_shutdown():
@@ -80,10 +88,10 @@ while True:
         break
 
     benchmark = Benchmark()
-    benchmark.start('Point transform')
+    # benchmark.start('Point transform')
 
     # INPUT TRANSFORMASJON
-    scan = LidarScan(ranges, globalMap.robotPos)
+    scan = LidarScan(ranges, globalMap.robotPos, benchmark=benchmark)
 
     benchmark.start('Draw screen')
 
@@ -98,66 +106,52 @@ while True:
         Point(-0.1, -0.1).toScreen().xy()
     ], 5)
 
-    for point in scan.points:
-        pygame.draw.circle(screen, "grey", point.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 1)
+    for point in scan.points[::5]: # Tegn hvert 5. punkt for å spar tid
+        pygame.draw.circle(screen, "grey", point.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 2)
 
-    # for i, (p1, p2) in enumerate(zip(scan.featurePoints, scan.featurePoints[1:])):
-    #     pygame.draw.circle(screen, "black", p1.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 1)
-    #     if scan.linesBool[i]:
-    #         pygame.draw.line(screen, "gray", p1.toReferenceFrame(globalMap.robotPos).toScreen().xy(), p2.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 2)
-
-    # Skriv robotPos til skjermen
-    f = pygame.font.Font(size=32)
-    screen.blit(f.render(f'robotPos: ({round(globalMap.robotPos.x, 2)}, {round(globalMap.robotPos.y, 2)}, {round(globalMap.robotPos.angle, 2)})', True, "black", "white"), (10, 10))
-
-    # offsetSumInRobotFrame = Point(offsetSum)
-
-    # screen.blit(f.render(f'offset: ({round(offsetSumInRobotFrame.x, 2)}, {round(offsetSumInRobotFrame.y, 2)}, {round(offsetSum[2], 2)})', True, "black", "white"), (10, 70))
-    # # screen.blit(f.render(f'odomModifierX: {round(odomModifierX, 2)}', True, "black", "white"), (10, 30))
-    # # screen.blit(f.render(f'odomModifierZ: {round(odomModifierZ, 2)}', True, "black", "white"), (10, 50))
+    # # Skriv robotPos til skjermen
+    # screen.blit(f.render(f'robotPos: ({round(globalMap.robotPos.x, 2)}, {round(globalMap.robotPos.y, 2)}, {round(globalMap.robotPos.angle, 2)})', True, "black", "white"), (10, 10))
 
     benchmark.start('UI and Drive')
 
     # BRUKER INPUT
     if pygame.mouse.get_pressed()[0]:
-        pygame.draw.circle(screen, "blue", Point(pygame.mouse.get_pos()).xy(), 30)
-        touchCord = Point(pygame.mouse.get_pos()).fromScreen()
-
-        target = touchCord.fromReferenceFrame(globalMap.robotPos)
-        turns, turnStart = None, None
-
-        pygame.draw.circle(screen, "blue", target.toScreen().xy(), 3)
-
-        # # Debugging av wheelDrivers
-        # turnRadius = circularWheelDriver(target)
-        # pygame.draw.circle(screen, "red", Point(0, turnRadius).toScreen().xy(), 4)
-        # pygame.draw.circle(screen, "red", Point(0, turnRadius).toScreen().xy(), abs(turnRadius)*100, width=1)
-        # pygame.draw.circle(screen, "red", Point(0.2, 0).toScreen().xy(), 4)
-        # # cmd_vel.linear.x = target.distance(Point(0, 0)) / 20
-        # # cmd_vel.angular.z = 0.1 / turnRadius
-        # # cmd_vel_pub.publish(cmd_vel)
-        # pygame.draw.line(screen, "green", Point(0.2, 0).toScreen().xy(), Point(0, turnRadius).toScreen().xy(), 2)
-        # pygame.draw.line(screen, "green", Point(0.2, 0).toScreen().xy(), target.toScreen().xy(), 2)
-
-
-        # # En potensiell miss, spørs på obscurement
-        # pInRobotFrameAngle = target.origoAngle()
-
-        # # Binærsøk fram til rett måling
-        # bestPointIndexMin, bestPointIndexMax = 0, len(scan.points) - 1
-        # while bestPointIndexMax - bestPointIndexMin > 1:
-        #     bestPointIndex = int((bestPointIndexMax + bestPointIndexMin) / 2)
-        #     print(bestPointIndex)
-        #     # Merk at Lidaren gir oss punktan fra stor til lav vinkel (venstre mot høyre)
-        #     if scan.points[bestPointIndex].toReferenceFrame(globalMap.robotPos).origoAngle() > pInRobotFrameAngle:
-        #         bestPointIndexMax = bestPointIndex
-        #     else:
-        #         bestPointIndexMin = bestPointIndex
-        # measurementPoint = scan.points[int((bestPointIndexMax + bestPointIndexMin) / 2)].toReferenceFrame(globalMap.robotPos)
-
-        # pygame.draw.circle(screen, "red", measurementPoint.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 5)
+        clickPoint = Point(pygame.mouse.get_pos())
+        touchCord = clickPoint.fromScreen().fromReferenceFrame(globalMap.robotPos)
+        if clearMapButton.isClick(clickPoint):
+            globalMap = GlobalMap()
+        elif stopButton.isClick(clickPoint):
+            target, turns, turnStart = None, None, None
+            queueButton.queue = []
+        elif returnButton.isClick(clickPoint):
+            target, turns, turnStart = Point(0, 0), None, None
+            queueButton.queue = []
+            pygame.draw.circle(screen, "blue", target.toScreen().xy(), 3)
+        elif queueButton.isClick(clickPoint):
+            if queueButton.label == 'Queue' and not target:
+                # Klikket på queue
+                queueButton.label = 'Drive (0)'
+                queueButton.queue = []
+            elif queueButton.queue:
+                # Klikket på Drive, dersom queue ikke er tom
+                target = queueButton.queue.pop(0)
+                queueButton.label = 'Queue'
+        elif queueButton.label.startswith('Drive'):
+            if not queueButton.queue or queueButton.queue[-1].distance(touchCord) > 0.5:
+                pygame.draw.circle(screen, "blue", clickPoint.xy(), 30)
+                queueButton.queue.append(touchCord)
+                queueButton.label = 'Drive (' + str(int(''.join([c for c in queueButton.label if c.isnumeric()]))+1) + ')'
+                print(queueButton.queue)
+            else:
+                pygame.draw.circle(screen, "green", clickPoint.xy(), 30)
+        else:
+            # Kjør til punktet
+            pygame.draw.circle(screen, "blue", clickPoint.xy(), 30)
+            target = touchCord
+            turns, turnStart = None, None
+            pygame.draw.circle(screen, "blue", target.toScreen().xy(), 3)
     elif target and not turns:
-        turns = AStar(globalMap.robotPos, target, scan.points)
+        turns = AStar(globalMap.robotPos, target, scan.points + globalMap.getLinePoints(0.2))
         if turns:
             turns = TurnManager(turns)
         else:
@@ -165,43 +159,13 @@ while True:
             target = None
         turnStart = None
     
-    # # TODO: Dette skaffe nærmste punktet til målpunktet heller enn punktet som e nærmast roboten. 
-    # # Problemet med dette e at den ikkje recovere om punktet havne på veggen. 
-    # # Kanskje kombiner metodan? 
-    # if scan.points:
-    #     closest, closestDist = None, math.inf
-    #     for p in scan.points:
-    #         if not closest or p.distance(followAroundPoint) < closestDist:
-    #             closest, closestDist = p, p.distance(followAroundPoint)
-        
-    #     followAroundPoint = closest
+    benchmark.start('Drawing buttons')
 
-    #     pygame.draw.circle(screen, "blue", followAroundPoint.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 5)
-
-    # if scan.points:
-    #     while scan.points[followAroundIndex].distance(Point(0, 0)) > scan.points[followAroundIndex+1].distance(Point(0, 0)):
-    #         followAroundIndex += 1
-    #     while scan.points[followAroundIndex].distance(Point(0, 0)) > scan.points[followAroundIndex-11].distance(Point(0, 0)):
-    #         followAroundIndex -= 1
-
-    #     followAroundIndex = min(max(rangesLength/4, followAroundIndex), rangesLength*3/4)
-
-    #     pygame.draw.circle(screen, "blue", scan.points[followAroundIndex].toReferenceFrame(globalMap.robotPos).toScreen().xy(), 5)
-
-    # if len(scan.points) > 100:
-    #     pointsInRobotFrame = [p.toReferenceFrame(globalMap.robotPos) for p in scan.points]
-
-    #     followAroundPointIndex = pointIndexClosestToAngle(pointsInRobotFrame, followAroundAngle)
-
-    #     for i in range(4, 0, -1):
-    #         if pointsInRobotFrame[followAroundPointIndex].distance(Point(0, 0)) > pointsInRobotFrame[followAroundPointIndex-2**i].distance(Point(0, 0)):
-    #             followAroundPointIndex -= 2**i
-    #         if pointsInRobotFrame[followAroundPointIndex].distance(Point(0, 0)) > pointsInRobotFrame[followAroundPointIndex+2**i].distance(Point(0, 0)):
-    #             followAroundPointIndex += 2**i
-
-    #     followAroundAngle = pointsInRobotFrame[followAroundPointIndex].origoAngle()
+    for button in buttons:
+        button.draw(screen)
 
     if turns:
+        benchmark.start('Drawing turns')
         for t in turns.turns:
             pygame.draw.circle(screen, "green", t.endPos.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 5)
             if t.turnCenter:
@@ -209,6 +173,8 @@ while True:
                 pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(globalMap.robotPos).toScreen().xy(), abs(t.turnRadius)*100 - 20, width=1)
                 pygame.draw.circle(screen, "red", t.turnCenter.toReferenceFrame(globalMap.robotPos).toScreen().xy(), abs(t.turnRadius)*100, width=1)
                 pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(globalMap.robotPos).toScreen().xy(), abs(t.turnRadius)*100 + 20, width=1)
+
+    benchmark.start('Driving logic')
 
     # KJØRING
     if turns and not pygame.mouse.get_pressed()[0]:
@@ -218,7 +184,12 @@ while True:
         currDist = (datetime.datetime.now() - turnStart).total_seconds() * ROBOT_SPEED
 
         if currDist > turns.distance:
+            # Stopp kjøringa når vi har komme fram
             target, turns, turnStart = None, None, None
+
+            # Plukk fra queueButton om vi kan
+            if queueButton.queue:
+                target = queueButton.queue.pop(0)
         else:
             pass
             # Utfør planen ved å følg et punkt (for å korriger)
@@ -257,11 +228,7 @@ while True:
     benchmark.start('Map drawing')
     globalMap.draw(screen)
 
-    benchmark.stop()
     print(benchmark)
-
-    # if frameCount % 10 == 0:
-    #     print(benchmark)
 
     pygame.display.flip() # Draw the screen
 

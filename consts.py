@@ -54,6 +54,3 @@ SEE_THROUGH_LINE_BONUS = 0.05
 
 # Kor mange rays jevnt fordelt gjennom scannen, med en random offset pr runde, som fjerne eksisterende linjer. 
 SEE_THROUGH_LINE_COUNT = 3
-
-# Kor langt foran må et hjørne vær for at det skal tell som obscurement
-OBSCUREMENT_DISTANCE = 0.1
