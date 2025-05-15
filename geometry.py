@@ -3,6 +3,8 @@ import random
 
 from consts import GRID_SLOTS_PER_METER, LOCALIZATION_POINT_MATCH_DISTANCE, MAP_SCALE, SPLIT_DISTANCE, SCREEN_SIZE
 
+STR_DIGITS = 3
+
 class Point:
     def __init__(self, x, y=None):
         if y == None:
@@ -14,18 +16,21 @@ class Point:
             self.y = y
 
     def __str__(self):
-        return f'Point({self.x}, {self.y})'
+        return f'Point({round(self.x, STR_DIGITS)}, {round(self.y, STR_DIGITS)})'
 
     def __eq__(self, other):
         if type(other) is not Point:
             return False
         return self.x == other.x and self.y == other.y
-    
+
     def __hash__(self):
         return hash(self.xy())
 
     def xy(self):
         return self.x, self.y
+
+    def copy(self):
+        return Point(*self.xy())
 
     def orientation(self, angle=0.0):
         return Orientation(self.x, self.y, angle=angle)
@@ -96,7 +101,7 @@ class Orientation(Point):
             self.angle = angle
     
     def __str__(self):
-        return f'Orientation({self.x}, {self.y}, {self.angle})'
+        return f'Orientation({round(self.x, STR_DIGITS)}, {round(self.y, STR_DIGITS)}, {round(self.angle, STR_DIGITS)})'
     
     def __eq__(self, other):
         if type(other) is not Orientation:
@@ -108,10 +113,13 @@ class Orientation(Point):
 
     def xya(self):
         return self.x, self.y, self.angle
-    
+
+    def copy(self):
+        return Orientation(*self.xya())
+
     def point(self):
         return Point(self.x, self.y)
-    
+
     def add(self, orientation):
         angle = 0.0
         if isinstance(orientation, Orientation):
@@ -132,16 +140,16 @@ class Line:
     def __init__(self, p1, p2):
         self.p1 = p1
         self.p2 = p2
-    
+
     def __str__(self):
         return f'Line({self.p1}, {self.p2})'
-    
+
     def closestPointOnLine(self, p, bounded=True):
         return closestPointOnLine(self.p1, self.p2, self.p3, bounded=bounded)
-    
+
     def lineDistance(self, p1, p2, p3, bounded=True):
         return lineDistance(p1, p2, p3, bounded=bounded)
-    
+
     @property
     def points(self):
         return [self.p1, self.p2]
@@ -152,16 +160,22 @@ def unitCirclePoint(angle):
 
 
 def getUnitPointFromAngle(index, rangesLength, correction=0):
-    'Returns a (x, y) touple on the unit circle from an index in the Lidar list'
+    'Returns a (x, y) tuple on the unit circle from an index in the Lidar list'
     return unitCirclePoint((2 * math.pi * index / rangesLength) - math.pi + correction) # Den første målingen e rett bakover
 
 
-def closestPointOnLine(p1, p2, p3, bounded=True):
-    'Det nærmeste punktet til p3 på linja mellom p1 og p2'
+def closestPointOnLine(p1, p2, p3, bounded=True, limit=False):
+    '''
+    Det nærmeste punktet til p3 på linja mellom p1 og p2. 
+    Bounded begrense at puktet må vær mellom p1 og p2. 
+    Limit returne None istedet dersom punktet bli begrensa mellom p1 og p2. 
+    '''
     t = ((p3.x - p1.x) * (p2.x - p1.x) + (p3.y - p1.y) * (p2.y - p1.y)) / ((p2.x - p1.x)**2 + (p2.y - p1.y)**2)
 
     if bounded:
         t = min(max(0, t), 1)
+        if limit and (t == 0 or t == 1):
+            return None
 
     return Point(p1.x + t * (p2.x - p1.x), p1.y + t * (p2.y - p1.y))
 

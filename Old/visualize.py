@@ -35,7 +35,7 @@ cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
 cmd_vel = Twist()
 
 def getAngle(i):
-    'Returns a (x, y) touple on the unit circle from an index in the Lidar list'
+    'Returns a (x, y) tuple on the unit circle from an index in the Lidar list'
     vinkel = 2 * math.pi * i / 430
     return (math.sin(vinkel), -math.cos(vinkel))
 

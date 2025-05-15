@@ -1,8 +1,12 @@
+import datetime
 import math
 import random
 from typing import List
+import pygame
 
-from geometry import Point, angleFromPoints, lineDistance, unitCirclePoint
+from consts import ROBOT_SPEED
+
+from geometry import Point, angleFromPoints, circularWheelDriver, closestPointOnLine, unitCirclePoint
 
 class Turn:
     def __init__(self, startPos, turnRadius, distance):
@@ -32,17 +36,17 @@ class Turn:
             raise Exception('Can\'t have negative distance here')
 
         if clamp:
-            distance = min(max(0, distance), self.distance) if self.distance > 0 else min(max(self.distance, distance), 0)
+            distance = min(max(0, distance), abs(self.distance))
 
         if math.isinf(self.turnRadius):
             return self.startPos.add(unitCirclePoint(self.startPos.angle).scale(math.copysign(distance, self.distance)))
         else:
             return self.startPos.rotateAround(math.copysign(distance, self.distance) / self.turnRadius , self.turnCenter)
 
-    def free(self, points, margin=0.25):
+    def free(self, points, margin=0.25, forwardMargin=True):
         '''
         Om det e nån punkt i points som bilen kræsje med. Margin e kor my klaring vi ønske for bilen på hver side. 
-        Returne en touple med en boolean om vi har åpen bane, og evt hvilket punkt vi kræsja i. 
+        Returne en tuple med en boolean om vi har åpen bane, og evt hvilket punkt vi kræsja i. 
         '''
         # For dette trur e vi bare treng å filtrer ut dem punktan som e i retning den anndelen av sirkelen vi kjøre i, 
         # for så å sjekk at avstanden fra sentrum av sirkelen e minst margin differanse fra radius av sirkelen. 
@@ -51,7 +55,8 @@ class Turn:
 
         if math.isinf(self.turnRadius):
             for point in points:
-                if lineDistance(self.startPos, self.endPos, point) < margin:
+                closest = closestPointOnLine(self.startPos, self.endPos, point, limit=not forwardMargin)
+                if closest and closest.distance(point) < margin:
                     return (False, point)
             return (True, None)
 
@@ -66,25 +71,20 @@ class Turn:
             else:
                 angle = angleFromPoints(point, self.turnCenter, self.startPos)
 
-            if 0 < angle < (abs(self.distance) + margin) / abs(self.turnRadius):
+            if 0 < angle < (abs(self.distance) + (margin if forwardMargin else 0)) / abs(self.turnRadius):
                 return (False, point)
 
         return (True, None)
 
-    # # Greier for å debug turn sin free metode. 
-    # testTurn = Turn(Orientation(0, 0, 0), 1, -0.5)
-    # pygame.draw.circle(screen, "red", testTurn.turnCenter.toScreen().xy(), 10)
-    # pygame.draw.circle(screen, "blue", testTurn.endPos.toScreen().xy(), 10)
-    # if testTurn.turnCenter:
-    #     pygame.draw.circle(screen, "red", testTurn.turnCenter.toScreen().xy(), abs(testTurn.turnRadius)*100, width=1)
-
-    # for x in range(-30, 30):
-    #     for y in range(-30, 30):
-    #         pnt = Point(x/20, y/20)
-    #         if testTurn.free([pnt]):
-    #             pygame.draw.circle(screen, "green", pnt.toScreen().xy(), 1)
-    #         else:
-    #             pygame.draw.circle(screen, "red", pnt.toScreen().xy(), 1)
+    def draw(self, screen, robotPos, width=0.25, steps=5, color='red'):
+        'Heller enn å tegn sirkla korrekt rotert i pygame, tar vi bare å bruke partway på sidan av svingen, som en rullebane. Funke fjell:)'
+        for i in range(steps):
+            partway = self.partway(abs(self.distance) * i / (steps-1))
+            if width == 0:
+                pygame.draw.circle(screen, color, partway.toReferenceFrame(robotPos).toScreen().xy(), 1)
+            else:
+                pygame.draw.circle(screen, color, partway.add(unitCirclePoint(partway.angle + math.pi / 2).scale(width)).toReferenceFrame(robotPos).toScreen().xy(), 1)
+                pygame.draw.circle(screen, color, partway.add(unitCirclePoint(partway.angle - math.pi / 2).scale(width)).toReferenceFrame(robotPos).toScreen().xy(), 1)
 
 
 class TurnManager():
@@ -126,10 +126,9 @@ def rateTurns(goalPos, turns):
     return sum([abs(t.distance) for t in turns]) + goalPos.distance(turns[-1].endPos)
 
 
-def AStar(startPos, goalPos: Point, obstacles: List[Point], stepLength=0.3, stepAngles=5, minTurnRadius=0.45):
+def AStar(startPos, goalPos: Point, obstacles: List[Point], backLimit=1, stepLength=0.3, stepAngles=5, minTurnRadius=0.45):
     '''
-    Returne en liste av påfølgende Turns, som kan utføres for å nå en posisjon med A*, uten driftkorrigering. 
-    Om vi replanne ofte nok burda det ikkje bli et problem. 
+    Returne en liste av påfølgende Turns, som kan utføres for å nå en posisjon med Hybrid A*. 
     La stepAngles vær et oddetall så vi får med kjøring rett fram og bak:) 
     '''
     turnRadiusAndStep = []
@@ -142,8 +141,8 @@ def AStar(startPos, goalPos: Point, obstacles: List[Point], stepLength=0.3, step
     turnSequences = []
     turnSequencesRating = []
 
-    # Vi shuffle randomly for å raskar kunna kræsj i ting. Dersom mange punkt som hadd forhindra svingen lønne
-    # det seg å sjå på dem i tilfeldig rekkefølge heller enn i f.eks. scan rekkefølge. 
+    # Vi shuffle randomly for å raskar kunna kræsj i ting. Jo fleire punkt som hadd forhindra svingen lønne
+    # det seg å sjå på dem for å finn et av dem tidlig, heller enn å ta det i scan rekkefølge. 
     random.shuffle(obstacles)
 
     for _ in range(200):
@@ -155,6 +154,10 @@ def AStar(startPos, goalPos: Point, obstacles: List[Point], stepLength=0.3, step
             turnSequence = []
 
         for turnRadius, step in turnRadiusAndStep:
+            if step < 0 and (backLimit == 0 or (turnSequence and backLimit != None and all(t.distance < 0 for t in turnSequence[::-1][:backLimit]))):
+                # Begrens påfølgende bakover kjøring
+                continue
+
             if turnSequence:
                 turn = Turn(turnSequence[-1].endPos, turnRadius, step)
             else:
@@ -180,7 +183,83 @@ def AStar(startPos, goalPos: Point, obstacles: List[Point], stepLength=0.3, step
                     turnSequencesRating.insert(seqIndex, rateTurns(goalPos, turnSeq))
                     break
 
-        if goalPos.distance(turnSequences[0][-1].endPos) < stepLength * 2/3:
+        if not turnSequences:
+            return None
+        elif goalPos.distance(turnSequences[0][-1].endPos) < stepLength * 2/3:
             break
 
     return turnSequences[0] if turnSequences else None
+
+
+class Driver:
+    def __init__(self):
+        self.target, self.turns, self.turnStart = None, None, None
+        self.backLimit = None
+
+    def setTarget(self, target, robotPos, obstacles: List[Point]):
+        self.target = target
+        self.replan(robotPos, obstacles)
+
+    def replan(self, robotPos, obstacles):
+        turns = AStar(robotPos, self.target, obstacles, backLimit=self.backLimit)
+        if not turns:
+            print('Couldn\'t find turn sequence to that point')
+            self.target = None
+            return
+
+        self.turnStart = datetime.datetime.now()
+        self.turns = TurnManager(turns)
+
+    def stop(self):
+        self.target, self.turns, self.turnStart = None, None, None
+
+    def currDist(self):
+        'Dette e kjernen, vi skaffe nåværende distanse i turn sekvensen ved å sjå på når vi begynt den.'
+        return (datetime.datetime.now() - self.turnStart).total_seconds() * ROBOT_SPEED
+
+    def currTurnIndex(self):
+        return self.turns.currTurnIndex(self.currDist())
+
+    def directionDistance(self) -> int:
+        '''
+        Returne kor my distanse vi har igjen i denne kjøreretninga (fram/bak). 
+        Tiltenkt bruk på collision avoidance, sånn at roboten tørr å kjør opp te veggen. 
+        '''
+        lastSameDirTurnIndex = self.currTurnIndex()[0]
+        while len(self.turns.turns) > lastSameDirTurnIndex+1 and (self.turns.turns[lastSameDirTurnIndex].distance > 0) == (self.turns.turns[lastSameDirTurnIndex+1].distance > 0):
+            lastSameDirTurnIndex += 1
+        return sum([abs(t.distance) for t in self.turns.turns[:lastSameDirTurnIndex+1]]) - self.currDist()
+
+    def motion(self, robotPos):
+        '''
+        Denne bruke TurnManager sin guidePoint og circularWheelDriver for å produser en bevegense. 
+        Den justere også hastigheten med distansen fra guidePoint, så roboten korrigere alle retninger. 
+        Returne linear.x og angular.z som en tuple, med 0, 0 dersom det ikkje e en bevegelse akk no.
+        '''
+        if not self.target:
+            return 0, 0
+
+        if (datetime.datetime.now() - self.turnStart).total_seconds() * ROBOT_SPEED >= self.turns.distance:
+            self.stop()
+            return 0, 0
+
+        guidePoint = self.turns.guidePoint(self.currDist(), 0.3).toReferenceFrame(robotPos)
+        turnRadius = circularWheelDriver(guidePoint)
+
+        distanceSpeed = (guidePoint.distance(Point(0, 0)) - 0.20) * 10 * ROBOT_SPEED
+        linearX = min(max(-ROBOT_SPEED-0.05, math.copysign(max(0, distanceSpeed), guidePoint.x)), ROBOT_SPEED+0.05)
+        angularZ = linearX / turnRadius
+
+        return linearX, angularZ
+
+    def draw(self, screen, robotPos):
+        'Tegn guidePoint og marker kor roboten kjem te å kjør'
+        if not self.target:
+            return
+
+        currDist = (datetime.datetime.now() - self.turnStart).total_seconds() * ROBOT_SPEED
+        guidePoint = self.turns.guidePoint(currDist, 0.3).toReferenceFrame(robotPos)
+        pygame.draw.circle(screen, "blue", guidePoint.toScreen().xy(), 3)
+
+        for t in self.turns.turns[self.currTurnIndex()[0]:]:
+            t.draw(screen, robotPos, width=0, color='gray')

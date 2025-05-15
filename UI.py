@@ -9,9 +9,10 @@ buttonSizes = [10, 10, 110, 50]
 buttonPadding = 5
 
 class Button:
-    def __init__(self, label):
+    def __init__(self, *labels):
         global buttonSizes
-        self.label = label
+        self.labels = labels
+        self.labelIndex = 0
         self.minX, self.minY, self.maxX, self.maxY = buttonSizes
         self.width, self.height = self.maxX - self.minX, self.maxY - self.minY
         self.clicked = False
@@ -24,9 +25,24 @@ class Button:
         self.clicked = self.minX-buttonPadding <= clickPoint.x <= self.maxX+buttonPadding and self.minY-buttonPadding <= clickPoint.y <= self.maxY+buttonPadding
         return self.clicked
 
+    def isNewClick(self, clickPoint: Point):
+        'En metode som sjekke om kanppen e trykt på, og om trykket e nytt, altså om man held inn en knapp skal vi ikkje få evig mange trykk.'
+        newClick = not self.clicked and self.isClick(clickPoint)
+        if newClick and len(self.labels) > 1:
+            self.labelIndex = (self.labelIndex + 1) % len(self.labels)
+        return newClick
+
+    def label(self):
+        return self.labels[self.labelIndex]
+
+    def labelAppend(self):
+        'Tom metode som kan overskrives av en lambda funksjon om nødvendig'
+        return ''
+
+    def fullLabel(self):
+        return self.label() + self.labelAppend()
+
     def draw(self, screen: pygame.SurfaceType):
         if not self.clicked:
             pygame.draw.rect(screen, 'black', pygame.Rect(self.minX, self.minY, self.width, self.height), width=3)
-        screen.blit(f.render(self.label, True, "black", "white"), (self.minX+5, self.minY+self.centerBonus))
-
-        self.clicked = False
+        screen.blit(f.render(self.fullLabel(), True, "black", "white"), (self.minX+5, self.minY+self.centerBonus))

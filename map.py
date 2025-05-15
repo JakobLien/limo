@@ -57,9 +57,12 @@ class GlobalMap:
     def __init__(self):
         self.points: List[Point] = []
         self.lines: List[Tuple[int]] = []
-        self.robotPos = Orientation(0.0, 0.0, 0.0) # x, y og vinkel der x e fram, og radian vinkel (positiv venstre)
 
-    def addPoint(self, p: Point):
+        # Ved å splitt disse e håpet at vi kan få bedre performance ved å bestem sjølv når det oppdateres, og å ha en konsekvent state ellers. 
+        self.robotPos = Orientation(0.0, 0.0, 0.0) # x, y og vinkel der x e fram, og radian vinkel (positiv venstre)
+        self.odomRobotPos = Orientation(0.0, 0.0, 0.0) # Samme som robotPos, bare at denne oppdateres kontinuerlig. 
+
+    def addPoint(self, p: Point, moveMapPoint=True):
         '''
         Legg til et punkt i mappet, og merge med eksisterende punkt om dem e nærme nok, returne indexen av punktet.
         Dette e litt meir komplisert enn man sku tru, i stor grad fordi når man har slått sammen en måling inn i kartet,
@@ -71,14 +74,14 @@ class GlobalMap:
             return len(self.points) - 1
 
         # Flytt mot målingen. 
-        self.points[pointIndex] = point = point.toward(p, POINT_MERGE_MOVEMENT)
+        self.points[pointIndex] = point = point.toward(p, POINT_MERGE_MOVEMENT if moveMapPoint else 0)
 
         while True:
             # Så flytt mot nærmste punkt på kartet om det kjem innen rekkevidde. 
             mapPointIndex, mapPoint = closestPoint(point, self.points)
             if mapPoint == None or point.distance(mapPoint) >= POINT_MERGE_DISTANCE:
                 break
-            self.points[pointIndex] = point = point.toward(mapPoint, POINT_MERGE_MOVEMENT)
+            self.points[pointIndex] = point = point.toward(mapPoint, 0.5)
             self.transferLines(mapPointIndex, pointIndex, deleteLine=True)
             # self.validateData()
             self.removePoint(mapPointIndex)
@@ -185,7 +188,7 @@ class GlobalMap:
 
     def addLinesAndLocalize(self, scan: LidarScan, localize=False, localizeBy=None, benchmark=None):
         # Korriger posisjon dersom vi e i bevegelse. 
-        if len(scan.points) <= 3:
+        if len(scan.points) <= 5:
             return
 
         if not benchmark:
@@ -196,8 +199,11 @@ class GlobalMap:
         if localize:
             # TODO: Er vel litt sløsing å bruk all denne tida på å generer linja, for så å bare fortsett å bruk
             # hjørnan til lokalisering? Test ut å bruk features og en par punkt for lokalisering
-            offset = tryTranslations(localizeBy or self.points, scan.featurePoints)
+            self.robotPos = self.odomRobotPos.copy()
+            # Ignorer første og siste featurepoint for lokalisering, for det e sansynligvis ikkje et ekte hjørne. 
+            offset = tryTranslations(localizeBy or self.points, scan.featurePoints[1:-1])
             self.robotPos = self.robotPos.toReferenceFrame(offset)
+            self.odomRobotPos = self.robotPos.copy()
 
             # Korriger punktan i scannen. 
             scan.correct(offset)
@@ -211,8 +217,9 @@ class GlobalMap:
                 # ikkje en linje, skip
                 continue
 
-            p1Index = self.addPoint(p1)
-            p2Index = self.addPoint(p2)
+            isScanEnd = i == 0 or i == len(scan.featurePoints) - 2
+            p1Index = self.addPoint(p1, moveMapPoint=not isScanEnd)
+            p2Index = self.addPoint(p2, moveMapPoint=not isScanEnd)
 
             if p1Index == p2Index or self.points[p1Index] == None:
                 # Om det bli samme punkt pga nærhet, skip

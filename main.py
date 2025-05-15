@@ -4,13 +4,12 @@ import math
 import os
 
 from UI import Button
-from consts import ROBOT_SPEED
-from driving import AStar, TurnManager
+from driving import Driver, Turn
 from map import LidarScan, GlobalMap
 os.environ["DISPLAY"] = ":0" # Gjør at pygame åpne vindu på roboten heller enn over SSH
 
 from benchmark import Benchmark
-from geometry import Point, circularWheelDriver
+from geometry import Point
 import rospy
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
@@ -40,15 +39,16 @@ rospy.init_node('listener')
 rospy.Subscriber('/scan', LaserScan, scan_callback)
 
 globalMap = GlobalMap()
+driver = Driver()
 
 odomModifierX = 1
 odomModifierZ = 0.6
 
 def odom_callback(msg):
     global globalMap
-    globalMap.robotPos.x += msg.twist.twist.linear.x / 50 * math.cos(globalMap.robotPos.angle) * odomModifierX
-    globalMap.robotPos.y += msg.twist.twist.linear.x / 50 * math.sin(globalMap.robotPos.angle) * odomModifierX
-    globalMap.robotPos.angle += msg.twist.twist.angular.z / 50 * odomModifierZ
+    globalMap.odomRobotPos.x += msg.twist.twist.linear.x / 50 * math.cos(globalMap.odomRobotPos.angle) * odomModifierX
+    globalMap.odomRobotPos.y += msg.twist.twist.linear.x / 50 * math.sin(globalMap.odomRobotPos.angle) * odomModifierX
+    globalMap.odomRobotPos.angle += msg.twist.twist.angular.z / 50 * odomModifierZ
 
 # Subscribe to the /odom topic på 50 hz
 rospy.Subscriber('/odom', Odometry, odom_callback)
@@ -58,25 +58,18 @@ cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
 
 cmd_vel = Twist()
 
-isLine = False
-frameCount = 0
-touchCord = Point(0, 0)
-
-pointIndexes = []
-target = None
-
-turns = []
-turnStart = None
-# followAroundPoint = Point(1, 0)
-# followAroundIndex = rangesLength / 2
-
 clearMapButton = Button('ClearMap')
 stopButton = Button('Stop')
 returnButton = Button('Return')
-queueButton = Button('Queue')
+queueButton = Button('Queue', 'Drive')
 queueButton.queue = []
+queueButton.labelAppend = lambda: f' ({len(queueButton.queue)})' if queueButton.queue else ''
+avoidanceButton = Button('Avoid: off', 'Avoid: stop', 'Avoid: replan')
+avoidanceButton.labelIndex = 2
+backingButton = Button('Backing: 0', 'Backing: 1', 'Backing: 2', 'Backing: inf')
+backingButton.labelIndex = driver.backLimit = 1
 
-buttons = [clearMapButton, stopButton, returnButton, queueButton]
+buttons = [clearMapButton, stopButton, returnButton, queueButton, avoidanceButton, backingButton]
 
 while True:
     # Kryss ut eller CTRL + C for å stopp programmet
@@ -87,6 +80,13 @@ while True:
         cmd_vel_pub.publish(cmd_vel)
         break
 
+    if ranges == []:
+        # Sjekk 1000 gong i sekundet i main thread om vi har fått en ny scan
+        clock.tick(1000)
+        continue
+
+    globalMap.robotPos = globalMap.odomRobotPos.copy()
+
     benchmark = Benchmark()
     # benchmark.start('Point transform')
 
@@ -94,147 +94,114 @@ while True:
     scan = LidarScan(ranges, globalMap.robotPos, benchmark=benchmark)
 
     benchmark.start('Draw screen')
-
-    # TEGNING PÅ SKJERMEN
     # Draw background to clear last frame
     screen.fill("white")
 
     # Tegn inn en bil på midta
     pygame.draw.polygon(screen, "black", [
-        Point(0.2, 0).toScreen().xy(),
-        Point(-0.1, 0.1).toScreen().xy(),
-        Point(-0.1, -0.1).toScreen().xy()
+        Point(0.28, 0).toScreen().xy(),
+        Point(-0.02, 0.1).toScreen().xy(),
+        Point(-0.02, -0.1).toScreen().xy()
     ], 5)
 
     for point in scan.points[::5]: # Tegn hvert 5. punkt for å spar tid
         pygame.draw.circle(screen, "grey", point.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 2)
 
-    # # Skriv robotPos til skjermen
-    # screen.blit(f.render(f'robotPos: ({round(globalMap.robotPos.x, 2)}, {round(globalMap.robotPos.y, 2)}, {round(globalMap.robotPos.angle, 2)})', True, "black", "white"), (10, 10))
-
-    benchmark.start('UI and Drive')
-
-    # BRUKER INPUT
-    if pygame.mouse.get_pressed()[0]:
+    benchmark.start('UI logic')
+    if not pygame.mouse.get_pressed()[0]:
+        # Å sett dette "manuelt" her (utenfor button klassen) e den enklaste tilnærminga. 
+        for button in buttons:
+            button.clicked = False
+    else:
         clickPoint = Point(pygame.mouse.get_pos())
         touchCord = clickPoint.fromScreen().fromReferenceFrame(globalMap.robotPos)
-        if clearMapButton.isClick(clickPoint):
+        target = None
+        if clearMapButton.isNewClick(clickPoint):
             globalMap = GlobalMap()
-        elif stopButton.isClick(clickPoint):
-            target, turns, turnStart = None, None, None
+        elif stopButton.isNewClick(clickPoint):
+            driver.stop()
             queueButton.queue = []
-        elif returnButton.isClick(clickPoint):
-            target, turns, turnStart = Point(0, 0), None, None
-            queueButton.queue = []
-            pygame.draw.circle(screen, "blue", target.toScreen().xy(), 3)
-        elif queueButton.isClick(clickPoint):
-            if queueButton.label == 'Queue' and not target:
-                # Klikket på queue
-                queueButton.label = 'Drive (0)'
+        elif returnButton.isNewClick(clickPoint):
+            target = Point(0, 0)
+        elif queueButton.isNewClick(clickPoint):
+            if queueButton.labelIndex == 1:
                 queueButton.queue = []
-            elif queueButton.queue:
-                # Klikket på Drive, dersom queue ikke er tom
-                target = queueButton.queue.pop(0)
-                queueButton.label = 'Queue'
-        elif queueButton.label.startswith('Drive'):
-            if not queueButton.queue or queueButton.queue[-1].distance(touchCord) > 0.5:
-                pygame.draw.circle(screen, "blue", clickPoint.xy(), 30)
-                queueButton.queue.append(touchCord)
-                queueButton.label = 'Drive (' + str(int(''.join([c for c in queueButton.label if c.isnumeric()]))+1) + ')'
-                print(queueButton.queue)
-            else:
-                pygame.draw.circle(screen, "green", clickPoint.xy(), 30)
-        else:
-            # Kjør til punktet
-            pygame.draw.circle(screen, "blue", clickPoint.xy(), 30)
+                driver.stop()
+        elif avoidanceButton.isNewClick(clickPoint):
+            pass # Treng ikkje gjør nå spessielt, state e labelIndex
+        elif backingButton.isNewClick(clickPoint):
+            digit = ''.join([c for c in backingButton.label() if c.isdigit()])
+            driver.backLimit = int(digit) if digit else None
+        elif not any([b.isClick(clickPoint) for b in buttons]):
+            # Om man ikkje klikke på nån knappa. 
             target = touchCord
-            turns, turnStart = None, None
-            pygame.draw.circle(screen, "blue", target.toScreen().xy(), 3)
-    elif target and not turns:
-        turns = AStar(globalMap.robotPos, target, scan.points + globalMap.getLinePoints(0.2))
-        if turns:
-            turns = TurnManager(turns)
-        else:
-            print('Found no path')
-            target = None
-        turnStart = None
-    
-    benchmark.start('Drawing buttons')
 
+        # Gitt et kjøremål, håndter det med queue eller vanlig. Også tegn knapper og gjør at trykk på roboten er stopp. 
+        if target:
+            targetOnScreen = target.toReferenceFrame(globalMap.robotPos).toScreen()
+            if queueButton.labelIndex == 0: # Vanlig modus
+                if target.distance(globalMap.robotPos) < 0.5:
+                    # Klikk nær roboten skal stopp kjøringa
+                    driver.stop()
+                else:
+                    # Kjør til det stedet. 
+                    driver.setTarget(target, globalMap.robotPos, scan.points + globalMap.getLinePoints(0.2))
+                    pygame.draw.circle(screen, "green" if driver.target else 'red', targetOnScreen.xy(), 30)
+            else:
+                # Legg til i queue om det e langt nok unna forrige mål. 
+                if not queueButton.queue or queueButton.queue[-1].distance(target) > 0.5:
+                    queueButton.queue.append(target)
+                    pygame.draw.circle(screen, "green", targetOnScreen.xy(), 30)
+                else:
+                    pygame.draw.circle(screen, "blue", targetOnScreen.xy(), 30)
+
+    benchmark.start('Drawing buttons')
     for button in buttons:
         button.draw(screen)
 
-    if turns:
-        benchmark.start('Drawing turns')
-        for t in turns.turns:
-            pygame.draw.circle(screen, "green", t.endPos.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 5)
-            if t.turnCenter:
-                # Tegn på veian den kjøre
-                pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(globalMap.robotPos).toScreen().xy(), abs(t.turnRadius)*100 - 20, width=1)
-                pygame.draw.circle(screen, "red", t.turnCenter.toReferenceFrame(globalMap.robotPos).toScreen().xy(), abs(t.turnRadius)*100, width=1)
-                pygame.draw.circle(screen, "pink", t.turnCenter.toReferenceFrame(globalMap.robotPos).toScreen().xy(), abs(t.turnRadius)*100 + 20, width=1)
+    benchmark.start('Driving')
+    if queueButton.labelIndex == 0 and not driver.target and queueButton.queue:
+        target = queueButton.queue.pop(0)
+        if target.distance(globalMap.robotPos) > 0.5:
+            driver.setTarget(target, globalMap.robotPos, scan.points + globalMap.getLinePoints(0.2))
 
-    benchmark.start('Driving logic')
-
-    # KJØRING
-    if turns and not pygame.mouse.get_pressed()[0]:
-        if not turnStart:
-            turnStart = datetime.datetime.now()
-
-        currDist = (datetime.datetime.now() - turnStart).total_seconds() * ROBOT_SPEED
-
-        if currDist > turns.distance:
-            # Stopp kjøringa når vi har komme fram
-            target, turns, turnStart = None, None, None
-
-            # Plukk fra queueButton om vi kan
-            if queueButton.queue:
-                target = queueButton.queue.pop(0)
-        else:
-            pass
-            # Utfør planen ved å følg et punkt (for å korriger)
-            partway = turns.guidePoint(currDist, 0.3).toReferenceFrame(globalMap.robotPos)
-            pygame.draw.circle(screen, "blue", partway.toScreen().xy(), 3)
-
-            turnRadius = circularWheelDriver(partway)
-
-            distanceSpeed = (partway.distance(Point(0, 0)) - 0.20) * 10 * ROBOT_SPEED
-            cmd_vel.linear.x = min(max(-ROBOT_SPEED-0.05, math.copysign(max(0, distanceSpeed), partway.x)), ROBOT_SPEED+0.05)
-            cmd_vel.angular.z = cmd_vel.linear.x / turnRadius
-
-            # # TODO: Dette funke ikkje
-            # # Collision avoidance, gitt at vi kjøre slik som no 30 cm til. 
-            # # Burda gjør et unntak her for om den nåværende turnen slutte like før, men dette funke foreløpig. 
-            # if not Turn(globalMap.robotPos, turnRadius, math.copysign(0.3, cmd_vel.linear.x)).free(scan.points, margin=0.15)[0]:
-            #     print('COLISSION AVOIDANCE')
-            #     problemPoint = Turn(globalMap.robotPos, turnRadius, math.copysign(0.3, cmd_vel.linear.x)).free(scan.points, margin=0.15)[1]
-            #     pygame.draw.circle(screen, "red", problemPoint.fromReferenceFrame(globalMap.robotPos).toScreen().xy(), 10)
-            #     turns = None
-            #     # turns = AStar(globalMap.robotPos, target, scan.points)
-            #     # turns = TurnManager(turns)
-            #     turnStart = None
-            #     cmd_vel.linear.x = 0
-            #     cmd_vel.angular.z = 0
+    if pygame.mouse.get_pressed()[0]:
+        # Ikke kjør om nån trykke på skjermen
+        cmd_vel.linear.x, cmd_vel.angular.z = 0, 0 # 0.1, 100
     else:
-        # cmd_vel.linear.x = 0.1
-        # cmd_vel.angular.z = 100
-        cmd_vel.linear.x = 0
-        cmd_vel.angular.z = 0
+        cmd_vel.linear.x, cmd_vel.angular.z = driver.motion(globalMap.robotPos)
+
+    # Kommenter ut dette for å stopp bilen fra å kjør. 
     cmd_vel_pub.publish(cmd_vel)
 
-    # benchmark.start('Map maintenance and localization')
+    # Kun lokaliser når vi bevege oss, for å unngå stillestående drift. 
     globalMap.addLinesAndLocalize(scan, localize=cmd_vel.linear.x != 0, benchmark=benchmark)
+
+    if avoidanceButton.labelIndex != 0 and cmd_vel.linear.x != 0:
+        benchmark.start('Avoidance')
+        obstacles = scan.points + globalMap.getLinePoints(0.2)
+
+        # Denne collision avoidancen e intensjonelt litt konservativ, slik at den ikkje skal avbryte nyttige ting. 
+        currTurn = Turn(globalMap.robotPos, math.inf if cmd_vel.angular.z == 0 else cmd_vel.linear.x / cmd_vel.angular.z, min(cmd_vel.linear.x * 2.5, driver.directionDistance()))
+        currTurn.draw(screen, globalMap.robotPos, width=0.15)
+
+        # Vi sett forwardMargin=False for å gjør grensan av kor vi ser etter obstacles korrekt. 
+        if not currTurn.free(obstacles, margin=0.15, forwardMargin=False)[0]:
+            if avoidanceButton.labelIndex == 1:
+                driver.stop()
+            if avoidanceButton.labelIndex == 2:
+                driver.replan(globalMap.robotPos, obstacles)
 
     benchmark.start('Map drawing')
     globalMap.draw(screen)
+    driver.draw(screen, globalMap.robotPos)
 
-    print(benchmark)
+    # print(benchmark)
 
     pygame.display.flip() # Draw the screen
 
-    clock.tick(10)  # 10 FPS
+    ranges = []
 
-    frameCount += 1
 
 # Stopp ROS om vi kryssa ut
 rospy.signal_shutdown(0)
