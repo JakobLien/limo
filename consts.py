@@ -54,3 +54,10 @@ SEE_THROUGH_LINE_BONUS = 0.05
 
 # Kor mange rays jevnt fordelt gjennom scannen, med en random offset pr runde, som fjerne eksisterende linjer. 
 SEE_THROUGH_LINE_COUNT = 3
+
+# Begrens bredden av frontiers
+MIN_FRONTIER_WIDTH = 0.4
+MAX_FRONTIER_WIDTH = 2
+
+# Vi begrense kor langt unna vi kan sjå for å begrens unøyaktigheten
+SIGHT_DISTANCE = 4

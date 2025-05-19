@@ -1,4 +1,3 @@
-import datetime
 import pygame
 import math
 import os
@@ -9,7 +8,7 @@ from map import LidarScan, GlobalMap
 os.environ["DISPLAY"] = ":0" # Gjør at pygame åpne vindu på roboten heller enn over SSH
 
 from benchmark import Benchmark
-from geometry import Point
+from geometry import Point, closestPoint
 import rospy
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
@@ -42,7 +41,7 @@ globalMap = GlobalMap()
 driver = Driver()
 
 odomModifierX = 1
-odomModifierZ = 0.6
+odomModifierZ = 0.8
 
 def odom_callback(msg):
     global globalMap
@@ -68,8 +67,9 @@ avoidanceButton = Button('Avoid: off', 'Avoid: stop', 'Avoid: replan')
 avoidanceButton.labelIndex = 2
 backingButton = Button('Backing: 0', 'Backing: 1', 'Backing: 2', 'Backing: inf')
 backingButton.labelIndex = driver.backLimit = 1
+exploreButton = Button('Explore: Off', 'Explore: On')
 
-buttons = [clearMapButton, stopButton, returnButton, queueButton, avoidanceButton, backingButton]
+buttons = [clearMapButton, stopButton, returnButton, queueButton, avoidanceButton, backingButton, exploreButton]
 
 while True:
     # Kryss ut eller CTRL + C for å stopp programmet
@@ -102,10 +102,10 @@ while True:
         Point(0.28, 0).toScreen().xy(),
         Point(-0.02, 0.1).toScreen().xy(),
         Point(-0.02, -0.1).toScreen().xy()
-    ], 5)
+    ], 3)
 
     for point in scan.points[::5]: # Tegn hvert 5. punkt for å spar tid
-        pygame.draw.circle(screen, "grey", point.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 2)
+        pygame.draw.circle(screen, "black", point.toReferenceFrame(globalMap.robotPos).toScreen().xy(), 1)
 
     benchmark.start('UI logic')
     if not pygame.mouse.get_pressed()[0]:
@@ -132,6 +132,9 @@ while True:
         elif backingButton.isNewClick(clickPoint):
             digit = ''.join([c for c in backingButton.label() if c.isdigit()])
             driver.backLimit = int(digit) if digit else None
+        elif exploreButton.isNewClick(clickPoint):
+            if exploreButton.labelIndex == 0:
+                driver.stop()
         elif not any([b.isClick(clickPoint) for b in buttons]):
             # Om man ikkje klikke på nån knappa. 
             target = touchCord
@@ -160,9 +163,15 @@ while True:
         button.draw(screen)
 
     benchmark.start('Driving')
-    if queueButton.labelIndex == 0 and not driver.target and queueButton.queue:
-        target = queueButton.queue.pop(0)
-        if target.distance(globalMap.robotPos) > 0.5:
+    if not driver.target:
+        target = None
+        if queueButton.labelIndex == 0 and queueButton.queue:
+            target = queueButton.queue.pop(0)
+        elif exploreButton.labelIndex == 1 and globalMap.frontierLines:
+            frontierLinesCenter = [globalMap.points[i1].toward(globalMap.points[i2]) for (i1, i2) in globalMap.frontierLines]
+            target = closestPoint(globalMap.robotPos, frontierLinesCenter)[1]
+
+        if target and target.distance(globalMap.robotPos) > 0.5:
             driver.setTarget(target, globalMap.robotPos, scan.points + globalMap.getLinePoints(0.2))
 
     if pygame.mouse.get_pressed()[0]:
@@ -193,6 +202,7 @@ while True:
                 driver.replan(globalMap.robotPos, obstacles)
 
     benchmark.start('Map drawing')
+    # scan.draw(screen, globalMap.robotPos)
     globalMap.draw(screen)
     driver.draw(screen, globalMap.robotPos)
 

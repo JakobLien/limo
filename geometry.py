@@ -293,9 +293,9 @@ def splitAndMerge(points, distanceParameter=None):
     # Om ikkje fjerne vi det punktet. 
     # TODO: En bug med dette e at rekkefølgen har noko å si, vi burda istedet begyn med dem mest avvikende. 
     i = 0
-    while i < len(splitIndexes)-3:
-        if lineDistance(points[splitIndexes[i]], points[splitIndexes[i+2]], points[splitIndexes[i+1]], bounded=False) < distanceParameter:
-            splitIndexes.pop(i)
+    while i < len(splitIndexes)-2:
+        if lineDistance(points[splitIndexes[i]], points[splitIndexes[i+2]], points[splitIndexes[i+1]], bounded=False, checkEqual=False) < distanceParameter * 2:
+            splitIndexes.pop(i+1)
         else:
             i += 1
 

@@ -3,9 +3,9 @@ from typing import List, Tuple
 import pygame
 import random
 from benchmark import Benchmark
-from geometry import ClosestGrid, Orientation, Point, closestPoint, getUnitPointFromAngle, pointIndexClosestToAngle, splitAndMerge, tryTranslations, lineDistance, linesCrossing
+from geometry import ClosestGrid, Orientation, Point, closestPoint, getUnitPointFromAngle, splitAndMerge, tryTranslations, lineDistance, linesCrossing
 
-from consts import LINE_POINTS_PER_METER, LINE_MIN_LENGTH, POINT_MERGE_DISTANCE, POINT_LINE_MERGE_DISTANCE, POINT_MERGE_MOVEMENT, SEE_THROUGH_LINE_BONUS, SEE_THROUGH_LINE_COUNT, LINE_POINT_MAX_JUMP
+from consts import LINE_POINTS_PER_METER, LINE_MIN_LENGTH, MAX_FRONTIER_WIDTH, MIN_FRONTIER_WIDTH, POINT_MERGE_DISTANCE, POINT_LINE_MERGE_DISTANCE, POINT_MERGE_MOVEMENT, SEE_THROUGH_LINE_BONUS, SEE_THROUGH_LINE_COUNT, LINE_POINT_MAX_JUMP, SIGHT_DISTANCE
 
 # TODO: Kunna også prøvd å lagt inn en mekanisme for at det skal vær en viss penalty for å endre mappet. 
 # Typ at endringer skal koste meir enn bekreftelser, så mappet bli mindre jumpy. 
@@ -21,8 +21,8 @@ class LidarScan:
         self.ranges = ranges
         self.points, self.pointIndexes = [], []
         for i, r in list(enumerate(ranges))[int(len(ranges)*8/36):int(len(ranges)*28/36)]:
-            if r == None or r > 4:
-                # Fjern målingen om den e 90 grader bakover eller None 
+            if r == None or r > SIGHT_DISTANCE:
+                # Fjern målingen om den e ugyldig eller lenger unna enn vi akseptere
                 continue
             p = getUnitPointFromAngle(i, len(ranges)).scale(r).add(Point(0.2, 0)).fromReferenceFrame(robotPos)
             self.points.append(p)
@@ -51,12 +51,24 @@ class LidarScan:
         self.points = [p.toReferenceFrame(offset) for p in self.points]
         self.featurePoints = [self.points[i] for i in self.featurePointIndexes]
 
+    def draw(self, screen, robotPos):
+        for p in self.featurePoints:
+            pygame.draw.circle(screen, 'red', p.toReferenceFrame(robotPos).toScreen().xy(), 2)
+
+        for i, (p1, p2) in enumerate(zip(self.featurePoints, self.featurePoints[1:])):
+            if self.linesBool[i]:
+                # Potensielt vanlig vegg
+                pygame.draw.line(screen, 'black', p1.toReferenceFrame(robotPos).toScreen().xy(), p2.toReferenceFrame(robotPos).toScreen().xy(), 2)
+            else:
+                # Potensielt frontier
+                pygame.draw.line(screen, 'blue', p1.toReferenceFrame(robotPos).toScreen().xy(), p2.toReferenceFrame(robotPos).toScreen().xy(), 2)
 
 class GlobalMap:
     'Et kart for features, for localization'
     def __init__(self):
         self.points: List[Point] = []
         self.lines: List[Tuple[int]] = []
+        self.frontierLines: List[Tuple[int]] = []
 
         # Ved å splitt disse e håpet at vi kan få bedre performance ved å bestem sjølv når det oppdateres, og å ha en konsekvent state ellers. 
         self.robotPos = Orientation(0.0, 0.0, 0.0) # x, y og vinkel der x e fram, og radian vinkel (positiv venstre)
@@ -71,6 +83,7 @@ class GlobalMap:
         pointIndex, point = closestPoint(p, self.points, different=False)
         if point == None or p.distance(point) >= POINT_MERGE_DISTANCE:
             self.points.append(p)
+            p.mapPointIndex = len(self.points) - 1
             return len(self.points) - 1
 
         # Flytt mot målingen. 
@@ -86,6 +99,7 @@ class GlobalMap:
             # self.validateData()
             self.removePoint(mapPointIndex)
 
+        p.mapPointIndex = pointIndex
         return pointIndex
 
     def removePoint(self, pointIndex: int):
@@ -155,6 +169,7 @@ class GlobalMap:
 
         self.points = [p for p in self.points if p != None]
         self.lines = [(indexMapping[p1], indexMapping[p2]) for (p1, p2) in self.lines if p1 != None]
+        self.frontierLines = [(indexMapping[p1], indexMapping[p2]) for (p1, p2) in self.frontierLines if p1 != None]
 
         # self.validateData(allowNonePoint=False, allowNoneLine=False)
     
@@ -213,21 +228,13 @@ class GlobalMap:
         benchmark.start('Adding points')
         # Legg te alle punkt og linjer
         for i, (p1, p2) in enumerate(zip(scan.featurePoints, scan.featurePoints[1:])):
-            if not scan.linesBool[i] or p1.distance(p2) < POINT_MERGE_DISTANCE:
-                # ikkje en linje, skip
-                continue
-
-            isScanEnd = i == 0 or i == len(scan.featurePoints) - 2
+            isScanEnd = i == 0 or i == len(scan.featurePoints) - 2 # zip gjør lengden en kortar enn ellers
             p1Index = self.addPoint(p1, moveMapPoint=not isScanEnd)
             p2Index = self.addPoint(p2, moveMapPoint=not isScanEnd)
 
-            if p1Index == p2Index or self.points[p1Index] == None:
-                # Om det bli samme punkt pga nærhet, skip
+            if p1Index == p2Index or self.points[p1Index] == None or not scan.linesBool[i] or p1.distance(p2) < POINT_MERGE_DISTANCE:
+                # Om det bli samme punkt pga nærhet eller ikkje e en linje, skip
                 continue
-
-            # TODO: Her kan vi bruk logikk om at punktet har blitt slått sammen med et punkt som
-            # alt er et hjørne, for å kanskje hiv andre punktet direkte på den linja eller omvendt?
-            # Har sikkert ikkje så my å si. 
 
             # Legg te linja te mappet. 
             self.addLine(p1Index, p2Index)
@@ -275,7 +282,6 @@ class GlobalMap:
             for lineIndex, pointLineIndexes in enumerate(self.lines):
                 if pointLineIndexes[0] != None and linesCrossing(self.robotPos, measurementPoint.toward(self.robotPos, 0, meters=SEE_THROUGH_LINE_BONUS), *[self.points[i] for i in pointLineIndexes]):
                     self.removeLine(lineIndex)
-                    break
 
         # self.validateData()
         
@@ -306,12 +312,71 @@ class GlobalMap:
 
         # self.validateData()
         
+        benchmark.start('Add frontiers')
+        for i, (p1, p2) in enumerate(zip(scan.featurePoints, scan.featurePoints[1:])):
+            if scan.linesBool[i] or not (MIN_FRONTIER_WIDTH < p1.distance(p2) < MAX_FRONTIER_WIDTH):
+                # Ikkje en frontier, skip
+                continue
+
+            i1, i2 = p1.mapPointIndex, p2.mapPointIndex #getattr(p1, 'mapPointIndex', None), getattr(p2, 'mapPointIndex', None)
+            i1, i2 = min(i1, i2), max(i1, i2)
+            if (i1, i2) in self.frontierLines:
+                continue # Den finnes alt
+
+            p1, p2 = self.points[i1], self.points[i2]
+
+            if p1 == None or p2 == None or lineDistance(p1, p2, self.robotPos) < 1:
+                # Punktet har blitt fjernet fra kartet, eller vi e for nærme linja
+                continue
+
+            # TODO: Trur det e dette steget som gjør at frontiers ofte ikkje kjem imål, fordi dem 
+            # e kobla sammen med unøyaktige vegga. Burda kanskje fjern dette kravet? 
+            # samtidig e det dette som lar oss si at vi har vært her før eller ei. 
+            if len([True for l in self.lines if i1 in l]) != 1 or \
+               len([True for l in self.lines if i2 in l]) != 1:
+                # En av punktan har ikke nøyaktig 1 ekte linje
+                continue
+
+            # Sist, sjekk at dem ikkje allerede heng sammen
+            connectedPI = [i1]
+            i = 0
+            while i < len(connectedPI):
+                for line in [l for l in self.lines if connectedPI[i] in l]:
+                    if line[0] not in connectedPI:
+                        connectedPI.append(line[0])
+                    elif line[1] not in connectedPI:
+                        connectedPI.append(line[1])
+                if i2 in connectedPI:
+                    break
+                i += 1
+            if i2 in connectedPI:
+                # Disse heng sammen på kartet, ikkje lag frontier
+                continue
+
+            # Legg til frontier, fjern eksisterende på dem punktan. 
+            self.frontierLines = [l for l in self.frontierLines if i1 not in l and i2 not in l]
+            self.frontierLines.append((i1, i2))
+
+        benchmark.start('Remove frontiers')
+        for i, line in enumerate(self.frontierLines):
+            p1, p2 = self.points[line[0]], self.points[line[1]]
+            if not p1 or not p2:
+                continue
+
+            if not (MIN_FRONTIER_WIDTH < p1.distance(p2) < MAX_FRONTIER_WIDTH):
+                # Fjern frontiers som har en unyttig lengde
+                self.frontierLines[i] = (None, None)
+            elif lineDistance(p1, p2, self.robotPos) < 1:
+                # Fjern forntiers som vi nærme oss
+                self.frontierLines[i] = (None, None)
+
         benchmark.start('Correct indexes')
         self.correctIndexes()
 
         # print(benchmark)
 
     def getLinePoints(self, maxGap):
+        'Skaffe punkt jevnt fordelt på linjan på kartet med et maksimalt mellomrom på maxGap'
         points = set()
         for line in self.lines:
             if line[0] == None:
@@ -332,4 +397,7 @@ class GlobalMap:
             pygame.draw.circle(screen, 'red', p.toReferenceFrame(self.robotPos).toScreen().xy(), 2)
 
         for i1, i2 in self.lines:
-            pygame.draw.line(screen, "black", self.points[i1].toReferenceFrame(self.robotPos).toScreen().xy(), self.points[i2].toReferenceFrame(self.robotPos).toScreen().xy(), 2)
+            pygame.draw.line(screen, 'black', self.points[i1].toReferenceFrame(self.robotPos).toScreen().xy(), self.points[i2].toReferenceFrame(self.robotPos).toScreen().xy(), 2)
+
+        for i1, i2 in self.frontierLines:
+            pygame.draw.line(screen, 'green', self.points[i1].toReferenceFrame(self.robotPos).toScreen().xy(), self.points[i2].toReferenceFrame(self.robotPos).toScreen().xy(), 2)
