@@ -337,22 +337,6 @@ class GlobalMap:
                 # En av punktan har ikke nøyaktig 1 ekte linje
                 continue
 
-            # Sist, sjekk at dem ikkje allerede heng sammen
-            connectedPI = [i1]
-            i = 0
-            while i < len(connectedPI):
-                for line in [l for l in self.lines if connectedPI[i] in l]:
-                    if line[0] not in connectedPI:
-                        connectedPI.append(line[0])
-                    elif line[1] not in connectedPI:
-                        connectedPI.append(line[1])
-                if i2 in connectedPI:
-                    break
-                i += 1
-            if i2 in connectedPI:
-                # Disse heng sammen på kartet, ikkje lag frontier
-                continue
-
             # Legg til frontier, fjern eksisterende på dem punktan. 
             self.frontierLines = [l for l in self.frontierLines if i1 not in l and i2 not in l]
             self.frontierLines.append((i1, i2))

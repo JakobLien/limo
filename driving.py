@@ -163,7 +163,7 @@ def AStar(startPos, goalPos: Point, obstacles: List[Point], backLimit=1, stepLen
             else:
                 turn = Turn(startPos, turnRadius, step)
 
-            if not turn.free(obstacles, margin=0.25)[0]:
+            if not turn.free(obstacles, margin=0.25 if turnSequence else 0.15)[0]:
                 # Om denne svingen kjøre for nær/inni veggen, skip den. 
                 continue
 

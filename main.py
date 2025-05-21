@@ -1,22 +1,26 @@
 import pygame
 import math
 import os
+import sys
 
-from UI import Button
-from driving import Driver, Turn
-from map import LidarScan, GlobalMap
-os.environ["DISPLAY"] = ":0" # Gjør at pygame åpne vindu på roboten heller enn over SSH
-
-from benchmark import Benchmark
-from geometry import Point, closestPoint
 import rospy
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 
+from benchmark import Benchmark
+from consts import SCREEN_SIZE
+from driving import Driver, Turn
+from geometry import Point, closestPoint
+from map import LidarScan, GlobalMap
+from UI import Button
+from videoRecorder import ScreenRecorder
+
+os.environ["DISPLAY"] = ":0" # Gjør at pygame åpne vindu på roboten heller enn over SSH
+
 # pygame setup
 pygame.init()
-screen = pygame.display.set_mode((600, 600))
+screen = pygame.display.set_mode((SCREEN_SIZE, SCREEN_SIZE))
 clock = pygame.time.Clock()
 f = pygame.font.Font(size=32)
 
@@ -68,11 +72,13 @@ avoidanceButton.labelIndex = 2
 backingButton = Button('Backing: 0', 'Backing: 1', 'Backing: 2', 'Backing: inf')
 backingButton.labelIndex = driver.backLimit = 1
 exploreButton = Button('Explore: Off', 'Explore: On')
+recordButton = Button('Start Recording', 'Stop recording')
+recordButton.recorder = None
 
-buttons = [clearMapButton, stopButton, returnButton, queueButton, avoidanceButton, backingButton, exploreButton]
+buttons = [clearMapButton, stopButton, returnButton, queueButton, avoidanceButton, backingButton, exploreButton, recordButton]
 
 while True:
-    # Kryss ut eller CTRL + C for å stopp programmet
+    # Kryss ut eller CTRL + C for å stopp programmet. Merk at dette ikkje vil lagre videoer som pågår. 
     if any([e.type == pygame.QUIT for e in pygame.event.get()]) or rospy.is_shutdown():
         # Stopp bilen
         cmd_vel.linear.x = 0
@@ -135,6 +141,19 @@ while True:
         elif exploreButton.isNewClick(clickPoint):
             if exploreButton.labelIndex == 0:
                 driver.stop()
+        elif recordButton.isNewClick(clickPoint):
+            if recordButton.labelIndex == 1:
+                # Startet opptak, sett filnavn fra commandoen, og tell oppover så vi ikkje overskriv noko:)
+                recordingNumber = 1
+                filePath = f'./recordings/{(sys.argv[1] if len(sys.argv) > 1 else "test")} {recordingNumber}.mp4'
+                while os.path.exists(filePath):
+                    recordingNumber += 1
+                    filePath = f'./recordings/{(sys.argv[1] if len(sys.argv) > 1 else "test")} {recordingNumber}.mp4'
+                recordButton.recorder = ScreenRecorder(SCREEN_SIZE, SCREEN_SIZE, 10, filePath)
+            else:
+                # Stoppet opptak
+                recordButton.recorder.end_recording()
+                recordButton.recorder = None
         elif not any([b.isClick(clickPoint) for b in buttons]):
             # Om man ikkje klikke på nån knappa. 
             target = touchCord
@@ -210,8 +229,11 @@ while True:
 
     pygame.display.flip() # Draw the screen
 
-    ranges = []
+    # Capture the frame
+    if recordButton.recorder != None:
+        recordButton.recorder.capture_frame(screen)
 
+    ranges = []
 
 # Stopp ROS om vi kryssa ut
 rospy.signal_shutdown(0)
