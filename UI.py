@@ -5,7 +5,7 @@ from geometry import Point
 pygame.font.init()
 f = pygame.font.Font(size=24)
 
-buttonSizes = [10, 10, 110, 50]
+buttonSizes = [10, 10, 150, 70]
 buttonPadding = 5
 
 class Button:
@@ -19,7 +19,7 @@ class Button:
         self.centerBonus = (self.height - f.get_height()) / 2
 
         # Fiks neste buttonSizes. 
-        buttonSizes = [a+b for (a, b) in zip(buttonSizes, [0, 50, 0, 50])]
+        buttonSizes = [a+b for (a, b) in zip(buttonSizes, [0, 70, 0, 70])]
 
     def isClick(self, clickPoint: Point):
         self.clicked = self.minX-buttonPadding <= clickPoint.x <= self.maxX+buttonPadding and self.minY-buttonPadding <= clickPoint.y <= self.maxY+buttonPadding

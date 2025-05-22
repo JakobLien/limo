@@ -1,7 +1,7 @@
 import math
 import random
 
-from consts import GRID_SLOTS_PER_METER, LOCALIZATION_POINT_MATCH_DISTANCE, MAP_SCALE, SPLIT_DISTANCE, SCREEN_SIZE
+from consts import GRID_SLOTS_PER_METER, LOCALIZATION_POINT_MATCH_DISTANCE, MAP_SCALE, SPLIT_DISTANCE, SCREEN_WIDTH, SCREEN_HEIGHT
 
 STR_DIGITS = 3
 
@@ -200,13 +200,11 @@ def angleFromPoints(p1, p2, p3):
 
 def toScreen(x, y):
     'Konvertere fra robotens referanseramme der x e framover, til skjermen der negativ y e framover, der vi også sentrere på bilen'
-    # TODO: Skriv om til å bruk toReferenceFrame
-    return SCREEN_SIZE/2 - y * MAP_SCALE, SCREEN_SIZE/2 - x * MAP_SCALE
+    return SCREEN_WIDTH/2 - y * MAP_SCALE, SCREEN_HEIGHT/2 - x * MAP_SCALE
 
 
 def fromScreen(x, y):
-    # TODO: Skriv om til å bruk toReferenceFrame
-    return (-y + SCREEN_SIZE/2) / MAP_SCALE, (-x + SCREEN_SIZE/2) / MAP_SCALE
+    return (-y + SCREEN_HEIGHT/2) / MAP_SCALE, (-x + SCREEN_WIDTH/2) / MAP_SCALE
 
 
 # Her prøvd e meg på å implementer en raskar versjon av split and merge, men det va vanskelig. 

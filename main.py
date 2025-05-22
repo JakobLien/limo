@@ -9,7 +9,7 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 
 from benchmark import Benchmark
-from consts import SCREEN_SIZE
+from consts import SCREEN_WIDTH, SCREEN_HEIGHT
 from driving import Driver, Turn
 from geometry import Point, closestPoint
 from map import LidarScan, GlobalMap
@@ -20,9 +20,9 @@ os.environ["DISPLAY"] = ":0" # Gjør at pygame åpne vindu på roboten heller en
 
 # pygame setup
 pygame.init()
-screen = pygame.display.set_mode((SCREEN_SIZE, SCREEN_SIZE))
+screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.NOFRAME)
 clock = pygame.time.Clock()
-f = pygame.font.Font(size=32)
+f = pygame.font.Font(size=20)
 
 ranges = []
 rangesLength = 0
@@ -105,9 +105,10 @@ while True:
 
     # Tegn inn en bil på midta
     pygame.draw.polygon(screen, "black", [
-        Point(0.28, 0).toScreen().xy(),
-        Point(-0.02, 0.1).toScreen().xy(),
-        Point(-0.02, -0.1).toScreen().xy()
+        Point(0.25, 0).toScreen().xy(),
+        Point(-0.05, 0.1).toScreen().xy(),
+        Point(0, 0.0).toScreen().xy(),
+        Point(-0.05, -0.1).toScreen().xy()
     ], 3)
 
     for point in scan.points[::5]: # Tegn hvert 5. punkt for å spar tid
@@ -149,7 +150,7 @@ while True:
                 while os.path.exists(filePath):
                     recordingNumber += 1
                     filePath = f'./recordings/{(sys.argv[1] if len(sys.argv) > 1 else "test")} {recordingNumber}.mp4'
-                recordButton.recorder = ScreenRecorder(SCREEN_SIZE, SCREEN_SIZE, 10, filePath)
+                recordButton.recorder = ScreenRecorder(SCREEN_WIDTH, SCREEN_HEIGHT, 10, filePath)
             else:
                 # Stoppet opptak
                 recordButton.recorder.end_recording()
@@ -224,6 +225,12 @@ while True:
     # scan.draw(screen, globalMap.robotPos)
     globalMap.draw(screen)
     driver.draw(screen, globalMap.robotPos)
+
+    yTextPos = SCREEN_HEIGHT * 0.55
+    for label, time in benchmark.labelTime():
+        screen.blit(f.render(time, True, "black", "white"), (SCREEN_WIDTH - 220, yTextPos))
+        screen.blit(f.render(label, True, "black", "white"), (SCREEN_WIDTH - 170, yTextPos))
+        yTextPos += 15
 
     # print(benchmark)
 

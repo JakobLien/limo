@@ -1,6 +1,7 @@
 # GRUNNLEGGENDE
 # Skjermen e kvadratisk, med denne piksel størrelsen. 
-SCREEN_SIZE = 600
+SCREEN_WIDTH = 960 # Kunne hatt 1240 men det bli så unødvendig bredt
+SCREEN_HEIGHT = 700
 
 # Kor mange piksla en meter skal dekke. 
 MAP_SCALE = 100

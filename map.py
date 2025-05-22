@@ -53,7 +53,7 @@ class LidarScan:
 
     def draw(self, screen, robotPos):
         for p in self.featurePoints:
-            pygame.draw.circle(screen, 'red', p.toReferenceFrame(robotPos).toScreen().xy(), 2)
+            pygame.draw.circle(screen, 'orange', p.toReferenceFrame(robotPos).toScreen().xy(), 3)
 
         for i, (p1, p2) in enumerate(zip(self.featurePoints, self.featurePoints[1:])):
             if self.linesBool[i]:
@@ -96,7 +96,6 @@ class GlobalMap:
                 break
             self.points[pointIndex] = point = point.toward(mapPoint, 0.5)
             self.transferLines(mapPointIndex, pointIndex, deleteLine=True)
-            # self.validateData()
             self.removePoint(mapPointIndex)
 
         p.mapPointIndex = pointIndex
@@ -108,6 +107,11 @@ class GlobalMap:
             if pointIndex in line:
                 raise Exception('Can\'t remove point with line!')
 
+        # Å slett frontiers når vi slette et punkt virke heilt fair
+        for lineIndex, line in enumerate(self.frontierLines):
+            if pointIndex in line:
+                self.removeFrontierLine(lineIndex)
+
         self.points[pointIndex] = None
 
     def transferLines(self, p1Index: int, p2Index: int, deleteLine=False):
@@ -115,11 +119,18 @@ class GlobalMap:
         if p1Index == p2Index:
             raise Exception(f'Can\'t transfer lines between the same index: {p1Index} {p2Index}')
 
+        lineBetweenP1P2 = (min(p1Index, p2Index), max(p1Index, p2Index))
+
         if not deleteLine:
-            if (p1Index, p2Index) in self.lines:
+            if lineBetweenP1P2 in self.lines:
                 raise Exception('This merge would create lines between the same point.')
-        elif (min(p1Index, p2Index), max(p1Index, p2Index)) in self.lines:
-            self.removeLine(self.lines.index((min(p1Index, p2Index), max(p1Index, p2Index))))
+            if lineBetweenP1P2 in self.frontierLines:
+                raise Exception('This merge would create lines between the same point.')
+        else:
+            if lineBetweenP1P2 in self.lines:
+                self.removeLine(self.lines.index(lineBetweenP1P2))
+            if lineBetweenP1P2 in self.frontierLines:
+                self.removeFrontierLine(self.frontierLines.index(lineBetweenP1P2))
 
         for i, (p1, p2) in enumerate(self.lines):
             if p1Index == p1:
@@ -133,6 +144,20 @@ class GlobalMap:
                     self.removeLine(i)
                 else:
                     self.lines[i] = (min(p1, p2Index), max(p1, p2Index))
+                continue
+        
+        for i, (p1, p2) in enumerate(self.frontierLines):
+            if p1Index == p1:
+                if (min(p2, p2Index), max(p2, p2Index)) in self.frontierLines:
+                    self.removeFrontierLine(i)
+                else:
+                    self.frontierLines[i] = (min(p2, p2Index), max(p2, p2Index))
+                continue
+            if p1Index == p2:
+                if (min(p1, p2Index), max(p1, p2Index)) in self.frontierLines:
+                    self.removeFrontierLine(i)
+                else:
+                    self.frontierLines[i] = (min(p1, p2Index), max(p1, p2Index))
                 continue
 
     def addLine(self, p1Index: int, p2Index: int):
@@ -154,6 +179,9 @@ class GlobalMap:
     def removeLine(self, lineIndex: int):
         self.lines[lineIndex] = (None, None)
 
+    def removeFrontierLine(self, lineIndex: int):
+        self.frontierLines[lineIndex] = (None, None)
+
     def correctIndexes(self):
         '''
         For å støtt iterering mens vi endre antall underveis erstatte vi heller element vi fjerne med None (og linjer med (None, None)). 
@@ -172,28 +200,45 @@ class GlobalMap:
         self.frontierLines = [(indexMapping[p1], indexMapping[p2]) for (p1, p2) in self.frontierLines if p1 != None]
 
         # self.validateData(allowNonePoint=False, allowNoneLine=False)
-    
+
+    def validateLine(self, pi1, pi2, allowNone=True):
+        if pi1 == None:
+            if not allowNone:
+                raise Exception('None')
+            return
+        if pi1 == pi2:
+            raise Exception('Line between same point')
+        if pi1 > pi2:
+            raise Exception('Invalid line ordering')
+        if pi1 >= len(self.points) or pi2 >= len(self.points):
+            raise Exception('Invalid point index')
+        if self.points[pi1] == None or self.points[pi2] == None:
+            raise Exception('Pointing at None point!')
+
     def validateData(self, allowNonePoint=True, allowNoneLine=True):
         'Debugging verktøy som validere at alle linjer og punkt er gyldige'
         if not allowNonePoint and None in self.points:
             raise Exception('NonePoint after removal')
+        
         for pi1, pi2 in self.lines:
-            if not allowNoneLine and (not self.points[pi1] or not self.points[pi2]):
-                raise Exception('None')
-            if pi1 == None:
-                continue
-            if pi1 == pi2:
-                raise Exception('Line between same point')
-            if pi1 > pi2:
-                raise Exception('Invalid line ordering')
-            if pi1 >= len(self.points) or pi2 >= len(self.points):
-                raise Exception('Invalid point index')
+            self.validateLine(pi1, pi2, allowNone=allowNoneLine)
+
+        for pi1, pi2 in self.frontierLines:
+            self.validateLine(pi1, pi2, allowNone=allowNoneLine)
+
+        # Sjekk for duplicates overalt
         for li, l1 in enumerate(self.lines):
             if l1[0] == None:
                 continue
             for l2 in self.lines[li+1:]:
                 if l1 == l2:
                     raise Exception('Duplicate lines')
+        for li, l1 in enumerate(self.frontierLines):
+            if l1[0] == None:
+                continue
+            for l2 in self.frontierLines[li+1:]:
+                if l1 == l2:
+                    raise Exception('Duplicate frontierLines')
         for pi, p1 in enumerate(self.points):
             if p1 == None:
                 continue
@@ -209,9 +254,9 @@ class GlobalMap:
         if not benchmark:
             benchmark = Benchmark()
 
-        benchmark.start('Localize')
         offset = Orientation(0.0, 0.0, 0.0)
         if localize:
+            benchmark.start('Localize')
             # TODO: Er vel litt sløsing å bruk all denne tida på å generer linja, for så å bare fortsett å bruk
             # hjørnan til lokalisering? Test ut å bruk features og en par punkt for lokalisering
             self.robotPos = self.odomRobotPos.copy()
@@ -329,9 +374,6 @@ class GlobalMap:
                 # Punktet har blitt fjernet fra kartet, eller vi e for nærme linja
                 continue
 
-            # TODO: Trur det e dette steget som gjør at frontiers ofte ikkje kjem imål, fordi dem 
-            # e kobla sammen med unøyaktige vegga. Burda kanskje fjern dette kravet? 
-            # samtidig e det dette som lar oss si at vi har vært her før eller ei. 
             if len([True for l in self.lines if i1 in l]) != 1 or \
                len([True for l in self.lines if i2 in l]) != 1:
                 # En av punktan har ikke nøyaktig 1 ekte linje
@@ -341,11 +383,13 @@ class GlobalMap:
             self.frontierLines = [l for l in self.frontierLines if i1 not in l and i2 not in l]
             self.frontierLines.append((i1, i2))
 
+        # self.validateData()
+        
         benchmark.start('Remove frontiers')
         for i, line in enumerate(self.frontierLines):
-            p1, p2 = self.points[line[0]], self.points[line[1]]
-            if not p1 or not p2:
+            if line[0] == None:
                 continue
+            p1, p2 = self.points[line[0]], self.points[line[1]]
 
             if not (MIN_FRONTIER_WIDTH < p1.distance(p2) < MAX_FRONTIER_WIDTH):
                 # Fjern frontiers som har en unyttig lengde
@@ -354,6 +398,8 @@ class GlobalMap:
                 # Fjern forntiers som vi nærme oss
                 self.frontierLines[i] = (None, None)
 
+        # self.validateData()
+        
         benchmark.start('Correct indexes')
         self.correctIndexes()
 
